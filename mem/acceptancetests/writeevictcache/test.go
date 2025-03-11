@@ -11,15 +11,13 @@ import (
 
 	"os"
 
-	"github.com/sarchlab/akita/v4/mem/acceptancetests"
-	"github.com/sarchlab/akita/v4/mem/cache/writeevict"
-	"github.com/sarchlab/akita/v4/mem/idealmemcontroller"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/sim/directconnection"
-
-	"github.com/sarchlab/akita/v4/mem/trace"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/acceptancetests"
+	"github.com/sarchlab/akita/v3/mem/cache/writeevict"
+	"github.com/sarchlab/akita/v3/mem/idealmemcontroller"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/mem/trace"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 var seedFlag = flag.Int64("seed", 0, "Random Seed")
@@ -49,7 +47,6 @@ func initSeed() {
 	} else {
 		seed = *seedFlag
 	}
-
 	fmt.Fprintf(os.Stderr, "Seed %d\n", seed)
 	rand.Seed(seed)
 }
@@ -62,20 +59,17 @@ func buildEnvironment() {
 	}
 	//engine.AcceptHook(sim.NewEventLogger(log.New(os.Stdout, "", 0)))
 
-	conn := directconnection.MakeBuilder().
-		WithEngine(engine).
-		WithFreq(1 * sim.GHz).
-		Build("Conn")
+	conn := sim.NewDirectConnection("Conn", engine, 1*sim.GHz)
 
 	agent = acceptancetests.NewMemAccessAgent(engine)
 	agent.MaxAddress = *maxAddressFlag
 	agent.WriteLeft = *numAccessFlag
 	agent.ReadLeft = *numAccessFlag
 
-	addressToPortMapper := new(mem.SinglePortMapper)
+	lowModuleFinder := new(mem.SingleLowModuleFinder)
 	builder := writeevict.NewBuilder().
 		WithEngine(engine).
-		WithAddressToPortMapper(addressToPortMapper).
+		WithLowModuleFinder(lowModuleFinder).
 		WithLog2BlockSize(6).
 		WithNumMSHREntry(4).
 		WithWayAssociativity(8).
@@ -99,16 +93,16 @@ func buildEnvironment() {
 		WithEngine(engine).
 		WithNewStorage(4 * mem.GB).
 		Build("DRAM")
-	addressToPortMapper.Port = dram.GetPortByName("Top").AsRemote()
+	lowModuleFinder.LowModule = dram.GetPortByName("Top")
 
 	agent.LowModule = writeevictCache.GetPortByName("Top")
 
-	conn.PlugIn(agent.GetPortByName("Mem"))
-	conn.PlugIn(writeevictCache.GetPortByName("Bottom"))
-	conn.PlugIn(writeevictCache.GetPortByName("Top"))
-	conn.PlugIn(dram.GetPortByName("Top"))
+	conn.PlugIn(agent.GetPortByName("Mem"), 16)
+	conn.PlugIn(writeevictCache.GetPortByName("Bottom"), 16)
+	conn.PlugIn(writeevictCache.GetPortByName("Top"), 16)
+	conn.PlugIn(dram.GetPortByName("Top"), 16)
 
-	agent.TickLater()
+	agent.TickLater(0)
 }
 
 func runSimulation() {

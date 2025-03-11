@@ -3,7 +3,7 @@ package monitoring
 import (
 	"reflect"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -26,11 +26,11 @@ func (c *sampleComponent) Handle(_ sim.Event) error {
 	return nil
 }
 
-func (c *sampleComponent) NotifyRecv(_ sim.Port) {
+func (c *sampleComponent) NotifyRecv(_ sim.VTimeInSec, _ sim.Port) {
 	// Do nothing
 }
 
-func (c *sampleComponent) NotifyPortFree(_ sim.Port) {
+func (c *sampleComponent) NotifyPortFree(_ sim.VTimeInSec, _ sim.Port) {
 	// Do nothing
 }
 
@@ -40,7 +40,7 @@ func newSampleComponent() *sampleComponent {
 		buffer:        sim.NewBuffer("Comp.Buf", 10),
 	}
 
-	c.AddPort("Port1", sim.NewPort(c, 2, 2, "Comp.Port1"))
+	c.AddPort("Port1", sim.NewLimitNumMsgPort(c, 2, "Comp.Port1"))
 
 	return c
 }
@@ -59,7 +59,7 @@ var _ = Describe("Monitor", func() {
 		m.RegisterComponent(c)
 
 		Expect(m.components).To(HaveLen(1))
-		Expect(m.buffers).To(HaveLen(3))
+		Expect(m.buffers).To(HaveLen(2))
 	})
 
 	It("should walk int fields", func() {

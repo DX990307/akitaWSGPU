@@ -48,7 +48,6 @@ type HookableBase struct {
 func NewHookableBase() *HookableBase {
 	h := new(HookableBase)
 	h.hookList = make([]Hook, 0)
-
 	return h
 }
 

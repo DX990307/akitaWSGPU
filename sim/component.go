@@ -16,8 +16,8 @@ type Component interface {
 	Hookable
 	PortOwner
 
-	NotifyRecv(port Port)
-	NotifyPortFree(port Port)
+	NotifyRecv(now VTimeInSec, port Port)
+	NotifyPortFree(now VTimeInSec, port Port)
 }
 
 // ComponentBase provides some functions that other component can use.
@@ -36,7 +36,6 @@ func NewComponentBase(name string) *ComponentBase {
 	c := new(ComponentBase)
 	c.name = name
 	c.PortOwnerBase = NewPortOwnerBase()
-
 	return c
 }
 

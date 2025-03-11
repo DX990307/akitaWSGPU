@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/sarchlab/akita/v4/analysis"
-	"github.com/sarchlab/akita/v4/monitoring"
-	"github.com/sarchlab/akita/v4/noc/networking/networkconnector"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/analysis"
+	"github.com/sarchlab/akita/v3/monitoring"
+	"github.com/sarchlab/akita/v3/noc/networking/networkconnector"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 type tile struct {
@@ -30,7 +30,7 @@ type Connector struct {
 	gridSize [3]int
 	gridCap  [3]int
 	grid     [][][]tile
-	dstTable map[sim.RemotePort]*tile
+	dstTable map[string]*tile
 }
 
 // NewConnector creates a new mesh Connector.
@@ -39,7 +39,7 @@ func NewConnector() *Connector {
 		freq:                 1 * sim.GHz,
 		flitSize:             16,
 		linkTransferPerCycle: 1,
-		dstTable:             make(map[sim.RemotePort]*tile),
+		dstTable:             make(map[string]*tile),
 	}
 
 	c.connector = networkconnector.
@@ -59,7 +59,6 @@ func (c *Connector) WithEngine(e sim.Engine) *Connector {
 func (c *Connector) WithFreq(freq sim.Freq) *Connector {
 	c.freq = freq
 	c.connector = c.connector.WithDefaultFreq(freq)
-
 	return c
 }
 
@@ -93,7 +92,6 @@ func (c *Connector) WithNoCTracer(t tracing.Tracer) *Connector {
 func (c *Connector) WithFlitSize(size int) *Connector {
 	c.flitSize = size
 	c.connector = c.connector.WithFlitSize(size)
-
 	return c
 }
 
@@ -139,7 +137,7 @@ func (c *Connector) AddTile(loc [3]int, ports []sim.Port) {
 	c.mergePorts(loc, ports)
 
 	for _, port := range ports {
-		c.dstTable[port.AsRemote()] = &c.grid[loc[0]][loc[1]][loc[2]]
+		c.dstTable[port.Name()] = &c.grid[loc[0]][loc[1]][loc[2]]
 	}
 }
 
@@ -177,7 +175,6 @@ func (c *Connector) resizeGridToHold(loc [3]int) {
 	}
 
 	newGrid := c.initializeGrid(newGridCap)
-
 	for x := 0; x < c.gridSize[0]; x++ {
 		for y := 0; y < c.gridSize[1]; y++ {
 			for z := 0; z < c.gridSize[2]; z++ {
@@ -230,6 +227,10 @@ func (c *Connector) initializeGrid(cap [3]int) [][][]tile {
 func (c *Connector) EstablishNetwork() {
 	c.createSwitches()
 	c.createLinks()
+
+	// router := &meshRouter{}
+	// c.connector = c.connector.WithRouter(router)
+	// c.connector.EstablishRoute()
 }
 
 func (c *Connector) createLinks() {
@@ -288,7 +289,7 @@ func (c *Connector) createSwitches() {
 						},
 					})
 
-				rt.local = swPort.AsRemote()
+				rt.local = swPort
 			}
 		}
 	}
@@ -305,8 +306,8 @@ func (c *Connector) connectWithLeftSwitch(x, y, z int) {
 	left := c.grid[x1][y][z]
 
 	portA, portB := c.createLink(left.sw, curr.sw, "Right", "Left")
-	left.rt.right = portA.AsRemote()
-	curr.rt.left = portB.AsRemote()
+	left.rt.right = portA
+	curr.rt.left = portB
 }
 
 func (c *Connector) connectWithTopSwitch(x, y, z int) {
@@ -320,8 +321,8 @@ func (c *Connector) connectWithTopSwitch(x, y, z int) {
 	top := c.grid[x][y1][z]
 
 	portA, portB := c.createLink(top.sw, curr.sw, "Bottom", "Top")
-	top.rt.bottom = portA.AsRemote()
-	curr.rt.top = portB.AsRemote()
+	top.rt.bottom = portA
+	curr.rt.top = portB
 }
 
 func (c *Connector) connectWithFrontSwitch(x, y, z int) {
@@ -335,8 +336,8 @@ func (c *Connector) connectWithFrontSwitch(x, y, z int) {
 	front := c.grid[x][y][z1]
 
 	portA, portB := c.createLink(front.sw, curr.sw, "Back", "Front")
-	front.rt.back = portA.AsRemote()
-	curr.rt.front = portB.AsRemote()
+	front.rt.back = portA
+	curr.rt.front = portB
 }
 
 func (c *Connector) createLink(
@@ -344,7 +345,6 @@ func (c *Connector) createLink(
 	DirectionA, DirectionB string,
 ) (portA, portB sim.Port) {
 	transferPerCycle := int(math.Ceil(c.linkTransferPerCycle))
-
 	return c.connector.ConnectSwitches(a, b,
 		networkconnector.SwitchToSwitchLinkParameter{
 			LeftEndParam: networkconnector.LinkEndSwitchParameter{
@@ -364,7 +364,7 @@ func (c *Connector) createLink(
 				PortName:         DirectionB,
 			},
 			LinkParam: networkconnector.LinkParameter{
-				IsIdeal:       true,
+				IsIdeal:       false, // Use channel model for NoC tracing
 				Frequency:     c.freq * sim.Freq(c.linkTransferPerCycle),
 				NumStage:      1,
 				CyclePerStage: 1,

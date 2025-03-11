@@ -4,7 +4,7 @@ import (
 	"log"
 	"math/rand"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 type trafficMsg struct {
@@ -13,13 +13,6 @@ type trafficMsg struct {
 
 func (m *trafficMsg) Meta() *sim.MsgMeta {
 	return &m.MsgMeta
-}
-
-func (m *trafficMsg) Clone() sim.Msg {
-	cloneMsg := *m
-	cloneMsg.ID = sim.GetIDGenerator().Generate()
-
-	return &cloneMsg
 }
 
 // Test is a test case.
@@ -34,7 +27,6 @@ type Test struct {
 func NewTest() *Test {
 	t := &Test{}
 	t.receivedMsgsTable = make(map[sim.Msg]bool)
-
 	return t
 }
 
@@ -63,8 +55,8 @@ func (t *Test) GenerateMsgs(n uint64) {
 
 		msg := &trafficMsg{}
 		msg.Meta().ID = sim.GetIDGenerator().Generate()
-		msg.Src = srcPort.AsRemote()
-		msg.Dst = dstPort.AsRemote()
+		msg.Src = srcPort
+		msg.Dst = dstPort
 		msg.TrafficBytes = rand.Intn(4096)
 		// msg.TrafficBytes = 512
 		srcAgent.MsgsToSend = append(srcAgent.MsgsToSend, msg)
@@ -80,18 +72,16 @@ func (t *Test) registerMsg(msg sim.Msg) {
 func (t *Test) receiveMsg(msg sim.Msg, recvPort sim.Port) {
 	t.msgMustBeReceivedAtItsDestination(msg, recvPort)
 	t.msgMustNotBeReceivedBefore(msg)
-
+	t.receivedMsgs = append(t.receivedMsgs, msg)
 	// log.Printf("Msg %s: sent at %.10f, recved at %.10f",
 	// 	msg.Meta().ID, msg.Meta().SendTime, msg.Meta().RecvTime)
-
-	t.receivedMsgs = append(t.receivedMsgs, msg)
 }
 
 func (t *Test) msgMustBeReceivedAtItsDestination(
 	msg sim.Msg,
 	recvPort sim.Port,
 ) {
-	if msg.Meta().Dst != recvPort.AsRemote() {
+	if msg.Meta().Dst != recvPort {
 		panic("msg delivered to a wrong destination")
 	}
 }
@@ -100,7 +90,6 @@ func (t *Test) msgMustNotBeReceivedBefore(msg sim.Msg) {
 	if _, found := t.receivedMsgsTable[msg]; found {
 		panic("msg is double delivered")
 	}
-
 	t.receivedMsgsTable[msg] = true
 }
 
@@ -122,8 +111,7 @@ func (t *Test) MustHaveReceivedAllMsgs() {
 // ReportBandwidthAchieved dumps the bandwidth observed by each agents.
 func (t *Test) ReportBandwidthAchieved(now sim.VTimeInSec) {
 	for _, a := range t.agents {
-		log.Printf(
-			"agent %s, send bandwidth %.2f GB/s, recv bandwidth %.2f GB/s",
+		log.Printf("agent %s, send bandwidth %.2f GB/s, recv bandwidth %.2f GB/s",
 			a.Name(),
 			float64(a.sendBytes)/float64(now)/1e9,
 			float64(a.recvBytes)/float64(now)/1e9)

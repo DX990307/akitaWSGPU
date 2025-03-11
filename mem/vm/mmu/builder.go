@@ -1,8 +1,8 @@
 package mmu
 
 import (
-	"github.com/sarchlab/akita/v4/mem/vm"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/vm"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // A Builder can build MMU component
@@ -11,7 +11,7 @@ type Builder struct {
 	freq                     sim.Freq
 	log2PageSize             uint64
 	pageTable                vm.PageTable
-	migrationServiceProvider sim.RemotePort
+	migrationServiceProvider sim.Port
 	maxNumReqInFlight        int
 	pageWalkingLatency       int
 }
@@ -51,7 +51,7 @@ func (b Builder) WithPageTable(pageTable vm.PageTable) Builder {
 
 // WithMigrationServiceProvider sets the destination port that can perform
 // page migration.
-func (b Builder) WithMigrationServiceProvider(p sim.RemotePort) Builder {
+func (b Builder) WithMigrationServiceProvider(p sim.Port) Builder {
 	b.migrationServiceProvider = p
 	return b
 }
@@ -71,8 +71,8 @@ func (b Builder) WithPageWalkingLatency(n int) Builder {
 }
 
 // Build returns a newly created MMU component
-func (b Builder) Build(name string) *Comp {
-	mmu := new(Comp)
+func (b Builder) Build(name string) *MMU {
+	mmu := new(MMU)
 	mmu.TickingComponent = *sim.NewTickingComponent(
 		name, b.engine, b.freq, mmu)
 
@@ -80,13 +80,10 @@ func (b Builder) Build(name string) *Comp {
 	b.createPageTable(mmu)
 	b.configureInternalStates(mmu)
 
-	middleware := &middleware{Comp: mmu}
-	mmu.AddMiddleware(middleware)
-
 	return mmu
 }
 
-func (b Builder) configureInternalStates(mmu *Comp) {
+func (b Builder) configureInternalStates(mmu *MMU) {
 	mmu.MigrationServiceProvider = b.migrationServiceProvider
 	mmu.migrationQueueSize = 4096
 	mmu.maxRequestsInFlight = b.maxNumReqInFlight
@@ -94,7 +91,7 @@ func (b Builder) configureInternalStates(mmu *Comp) {
 	mmu.PageAccessedByDeviceID = make(map[uint64][]uint64)
 }
 
-func (b Builder) createPageTable(mmu *Comp) {
+func (b Builder) createPageTable(mmu *MMU) {
 	if b.pageTable != nil {
 		mmu.pageTable = b.pageTable
 	} else {
@@ -102,9 +99,12 @@ func (b Builder) createPageTable(mmu *Comp) {
 	}
 }
 
-func (b Builder) createPorts(name string, mmu *Comp) {
-	mmu.topPort = sim.NewPort(mmu, 4096, 4096, name+".ToTop")
+func (b Builder) createPorts(name string, mmu *MMU) {
+	mmu.topPort = sim.NewLimitNumMsgPort(mmu, 4096, name+".ToTop")
 	mmu.AddPort("Top", mmu.topPort)
-	mmu.migrationPort = sim.NewPort(mmu, 1, 1, name+".MigrationPort")
+	mmu.migrationPort = sim.NewLimitNumMsgPort(mmu, 1, name+".MigrationPort")
 	mmu.AddPort("Migration", mmu.migrationPort)
+
+	mmu.topSender = sim.NewBufferedSender(
+		mmu.topPort, sim.NewBuffer(name+".TopSenderBuffer", 4096))
 }

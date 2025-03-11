@@ -1,8 +1,8 @@
 package writeback
 
 import (
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 func getCacheLineID(
@@ -12,7 +12,6 @@ func getCacheLineID(
 	mask := uint64(0xffffffffffffffff << blockSizeAsPowerOf2)
 	cacheLineID = addr & mask
 	offset = addr & ^mask
-
 	return
 }
 
@@ -20,9 +19,9 @@ func bankID(block *cache.Block, wayAssocitivity, numBanks int) int {
 	return (block.SetID*wayAssocitivity + block.WayID) % numBanks
 }
 
-func clearPort(p sim.Port) {
+func clearPort(p sim.Port, now sim.VTimeInSec) {
 	for {
-		item := p.RetrieveIncoming()
+		item := p.Retrieve(now)
 		if item == nil {
 			return
 		}

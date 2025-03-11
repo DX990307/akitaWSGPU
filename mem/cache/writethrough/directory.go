@@ -1,11 +1,11 @@
 package writethrough
 
 import (
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/pipelining"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/pipelining"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 type dirPipelineItem struct {
@@ -17,12 +17,12 @@ func (i dirPipelineItem) TaskID() string {
 }
 
 type directory struct {
-	cache    *Comp
+	cache    *Cache
 	pipeline pipelining.Pipeline
 	buf      sim.Buffer
 }
 
-func (d *directory) Tick() (madeProgress bool) {
+func (d *directory) Tick(now sim.VTimeInSec) (madeProgress bool) {
 	for i := 0; i < d.cache.numReqPerCycle; i++ {
 		if !d.pipeline.CanAccept() {
 			break
@@ -34,13 +34,13 @@ func (d *directory) Tick() (madeProgress bool) {
 		}
 
 		trans := item.(*transaction)
-		d.pipeline.Accept(dirPipelineItem{trans})
+		d.pipeline.Accept(now, dirPipelineItem{trans})
 		d.cache.dirBuf.Pop()
 
 		madeProgress = true
 	}
 
-	madeProgress = d.pipeline.Tick() || madeProgress
+	madeProgress = d.pipeline.Tick(now) || madeProgress
 
 	for i := 0; i < d.cache.numReqPerCycle; i++ {
 		item := d.buf.Peek()
@@ -51,17 +51,17 @@ func (d *directory) Tick() (madeProgress bool) {
 		trans := item.(dirPipelineItem).trans
 
 		if trans.read != nil {
-			madeProgress = d.processRead(trans) || madeProgress
+			madeProgress = d.processRead(now, trans) || madeProgress
 			continue
 		}
 
-		madeProgress = d.processWrite(trans) || madeProgress
+		madeProgress = d.processWrite(now, trans) || madeProgress
 	}
 
 	return madeProgress
 }
 
-func (d *directory) processRead(trans *transaction) bool {
+func (d *directory) processRead(now sim.VTimeInSec, trans *transaction) bool {
 	read := trans.read
 	addr := read.Address
 	pid := read.PID
@@ -70,18 +70,19 @@ func (d *directory) processRead(trans *transaction) bool {
 
 	mshrEntry := d.cache.mshr.Query(pid, cacheLineID)
 	if mshrEntry != nil {
-		return d.processMSHRHit(trans, mshrEntry)
+		return d.processMSHRHit(now, trans, mshrEntry)
 	}
 
 	block := d.cache.directory.Lookup(pid, cacheLineID)
 	if block != nil && block.IsValid {
-		return d.processReadHit(trans, block)
+		return d.processReadHit(now, trans, block)
 	}
 
-	return d.processReadMiss(trans)
+	return d.processReadMiss(now, trans)
 }
 
 func (d *directory) processMSHRHit(
+	now sim.VTimeInSec,
 	trans *transaction,
 	mshrEntry *cache.MSHREntry,
 ) bool {
@@ -99,6 +100,7 @@ func (d *directory) processMSHRHit(
 }
 
 func (d *directory) processReadHit(
+	now sim.VTimeInSec,
 	trans *transaction,
 	block *cache.Block,
 ) bool {
@@ -124,6 +126,7 @@ func (d *directory) processReadHit(
 }
 
 func (d *directory) processReadMiss(
+	now sim.VTimeInSec,
 	trans *transaction,
 ) bool {
 	read := trans.read
@@ -140,7 +143,7 @@ func (d *directory) processReadMiss(
 		return false
 	}
 
-	if !d.fetchFromBottom(trans, victim) {
+	if !d.fetchFromBottom(now, trans, victim) {
 		return false
 	}
 
@@ -151,6 +154,7 @@ func (d *directory) processReadMiss(
 }
 
 func (d *directory) processWrite(
+	now sim.VTimeInSec,
 	trans *transaction,
 ) bool {
 	write := trans.write
@@ -161,17 +165,16 @@ func (d *directory) processWrite(
 
 	mshrEntry := d.cache.mshr.Query(pid, cacheLineID)
 	if mshrEntry != nil {
-		ok := d.writeBottom(trans)
+		ok := d.writeBottom(now, trans)
 		if ok {
-			return d.processMSHRHit(trans, mshrEntry)
+			return d.processMSHRHit(now, trans, mshrEntry)
 		}
-
 		return false
 	}
 
 	block := d.cache.directory.Lookup(pid, cacheLineID)
 	if block != nil && block.IsValid {
-		ok := d.processWriteHit(trans, block)
+		ok := d.processWriteHit(now, trans, block)
 		if ok {
 			tracing.AddTaskStep(trans.id, d.cache, "write-hit")
 		}
@@ -180,10 +183,10 @@ func (d *directory) processWrite(
 	}
 
 	if d.isPartialWrite(write) {
-		return d.partialWriteMiss(trans)
+		return d.partialWriteMiss(now, trans)
 	}
 
-	ok := d.fullLineWriteMiss(trans)
+	ok := d.fullLineWriteMiss(now, trans)
 	if ok {
 		tracing.AddTaskStep(trans.id, d.cache, "write-miss")
 	}
@@ -208,6 +211,7 @@ func (d *directory) isPartialWrite(write *mem.WriteReq) bool {
 }
 
 func (d *directory) partialWriteMiss(
+	now sim.VTimeInSec,
 	trans *transaction,
 ) bool {
 	write := trans.write
@@ -226,17 +230,15 @@ func (d *directory) partialWriteMiss(
 	}
 
 	sentThisCycle := false
-
 	if trans.writeToBottom == nil {
-		ok := d.writeBottom(trans)
+		ok := d.writeBottom(now, trans)
 		if !ok {
 			return false
 		}
-
 		sentThisCycle = true
 	}
 
-	ok := d.fetchFromBottom(trans, victim)
+	ok := d.fetchFromBottom(now, trans, victim)
 	if !ok {
 		return sentThisCycle
 	}
@@ -248,6 +250,7 @@ func (d *directory) partialWriteMiss(
 }
 
 func (d *directory) fullLineWriteMiss(
+	now sim.VTimeInSec,
 	trans *transaction,
 ) bool {
 	write := trans.write
@@ -255,17 +258,17 @@ func (d *directory) fullLineWriteMiss(
 	blockSize := uint64(1 << d.cache.log2BlockSize)
 	cacheLineID := addr / blockSize * blockSize
 	block := d.cache.directory.FindVictim(cacheLineID)
-
-	return d.processWriteHit(trans, block)
+	return d.processWriteHit(now, trans, block)
 }
 
-func (d *directory) writeBottom(trans *transaction) bool {
+func (d *directory) writeBottom(now sim.VTimeInSec, trans *transaction) bool {
 	write := trans.write
 	addr := write.Address
 
 	writeToBottom := mem.WriteReqBuilder{}.
-		WithSrc(d.cache.bottomPort.AsRemote()).
-		WithDst(d.cache.addressToPortMapper.Find(addr)).
+		WithSendTime(now).
+		WithSrc(d.cache.bottomPort).
+		WithDst(d.cache.lowModuleFinder.Find(addr)).
 		WithAddress(addr).
 		WithPID(write.PID).
 		WithData(write.Data).
@@ -285,6 +288,7 @@ func (d *directory) writeBottom(trans *transaction) bool {
 }
 
 func (d *directory) processWriteHit(
+	now sim.VTimeInSec,
 	trans *transaction,
 	block *cache.Block,
 ) bool {
@@ -298,7 +302,7 @@ func (d *directory) processWriteHit(
 	}
 
 	if trans.writeToBottom == nil {
-		ok := d.writeBottom(trans)
+		ok := d.writeBottom(now, trans)
 		if !ok {
 			return false
 		}
@@ -323,6 +327,7 @@ func (d *directory) processWriteHit(
 }
 
 func (d *directory) fetchFromBottom(
+	now sim.VTimeInSec,
 	trans *transaction,
 	victim *cache.Block,
 ) bool {
@@ -331,16 +336,16 @@ func (d *directory) fetchFromBottom(
 	blockSize := uint64(1 << d.cache.log2BlockSize)
 	cacheLineID := addr / blockSize * blockSize
 
-	bottomModule := d.cache.addressToPortMapper.Find(cacheLineID)
+	bottomModule := d.cache.lowModuleFinder.Find(cacheLineID)
 	readToBottom := mem.ReadReqBuilder{}.
-		WithSrc(d.cache.bottomPort.AsRemote()).
+		WithSendTime(now).
+		WithSrc(d.cache.bottomPort).
 		WithDst(bottomModule).
 		WithAddress(cacheLineID).
 		WithPID(pid).
 		WithByteSize(blockSize).
 		Build()
 	err := d.cache.bottomPort.Send(readToBottom)
-
 	if err != nil {
 		return false
 	}
@@ -367,6 +372,5 @@ func (d *directory) getBankBuf(block *cache.Block) sim.Buffer {
 	numWaysPerSet := d.cache.directory.WayAssociativity()
 	blockID := block.SetID*numWaysPerSet + block.WayID
 	bankID := blockID % len(d.cache.bankBufs)
-
 	return d.cache.bankBufs[bankID]
 }

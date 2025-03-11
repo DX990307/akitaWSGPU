@@ -3,20 +3,19 @@ package writeback
 import (
 	"fmt"
 
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-
-	"github.com/sarchlab/akita/v4/pipelining"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/pipelining"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // A Builder can build writeback caches
 type Builder struct {
-	engine              sim.Engine
-	freq                sim.Freq
-	addressToPortMapper mem.AddressToPortMapper
-	wayAssociativity    int
-	log2BlockSize       uint64
+	engine           sim.Engine
+	freq             sim.Freq
+	lowModuleFinder  mem.LowModuleFinder
+	wayAssociativity int
+	log2BlockSize    uint64
 
 	interleaving          bool
 	numInterleavingBlock  int
@@ -80,9 +79,9 @@ func (b Builder) WithNumMSHREntry(n int) Builder {
 	return b
 }
 
-// WithAddressToPortMapper sets the AddressToPortMapper to be used.
-func (b Builder) WithAddressToPortMapper(f mem.AddressToPortMapper) Builder {
-	b.addressToPortMapper = f
+// WithLowModuleFinder sets the LowModuleFinder to be used.
+func (b Builder) WithLowModuleFinder(f mem.LowModuleFinder) Builder {
+	b.lowModuleFinder = f
 	return b
 }
 
@@ -107,7 +106,6 @@ func (b Builder) WithInterleaving(
 	b.numInterleavingBlock = numBlock
 	b.interleavingUnitCount = unitCount
 	b.interleavingUnitIndex = unitIndex
-
 	return b
 }
 
@@ -147,23 +145,21 @@ func (b Builder) WithBankLatency(n int) Builder {
 }
 
 // Build creates a usable writeback cache.
-func (b Builder) Build(name string) *Comp {
-	cache := new(Comp)
+func (b Builder) Build(name string) *Cache {
+	cache := new(Cache)
 	cache.TickingComponent = sim.NewTickingComponent(
 		name, b.engine, b.freq, cache)
 
 	b.configureCache(cache)
 	b.createPorts(cache)
+	b.createPortSenders(cache)
 	b.createInternalStages(cache)
 	b.createInternalBuffers(cache)
-
-	middleware := &middleware{Comp: cache}
-	cache.AddMiddleware(middleware)
 
 	return cache
 }
 
-func (b *Builder) configureCache(cacheModule *Comp) {
+func (b *Builder) configureCache(cacheModule *Cache) {
 	blockSize := 1 << b.log2BlockSize
 	vimctimFinder := cache.NewLRUVictimFinder()
 	numSet := int(b.byteSize / uint64(b.wayAssociativity*blockSize))
@@ -172,8 +168,7 @@ func (b *Builder) configureCache(cacheModule *Comp) {
 
 	if b.interleaving {
 		directory.AddrConverter = &mem.InterleavingConverter{
-			InterleavingSize: uint64(b.numInterleavingBlock) *
-				(1 << b.log2BlockSize),
+			InterleavingSize:    uint64(b.numInterleavingBlock) * (1 << b.log2BlockSize),
 			TotalNumOfElements:  b.interleavingUnitCount,
 			CurrentElementIndex: b.interleavingUnitIndex,
 		}
@@ -187,29 +182,48 @@ func (b *Builder) configureCache(cacheModule *Comp) {
 	cacheModule.directory = directory
 	cacheModule.mshr = mshr
 	cacheModule.storage = storage
-	cacheModule.addressToPortMapper = b.addressToPortMapper
+	cacheModule.lowModuleFinder = b.lowModuleFinder
 	cacheModule.state = cacheStateRunning
 	cacheModule.evictingList = make(map[uint64]bool)
 }
 
-func (b *Builder) createPorts(cache *Comp) {
-	cache.topPort = sim.NewPort(cache,
-		cache.numReqPerCycle*2, cache.numReqPerCycle*2,
-		cache.Name()+".ToTop")
+func (b *Builder) createPorts(cache *Cache) {
+	cache.topPort = sim.NewLimitNumMsgPort(cache,
+		cache.numReqPerCycle*2, cache.Name()+".ToTop")
 	cache.AddPort("Top", cache.topPort)
 
-	cache.bottomPort = sim.NewPort(cache,
-		cache.numReqPerCycle*2, cache.numReqPerCycle*2,
-		cache.Name()+".BottomPort")
+	cache.bottomPort = sim.NewLimitNumMsgPort(cache,
+		cache.numReqPerCycle*2, cache.Name()+".BottomPort")
 	cache.AddPort("Bottom", cache.bottomPort)
 
-	cache.controlPort = sim.NewPort(cache,
-		cache.numReqPerCycle*2, cache.numReqPerCycle*2,
-		cache.Name()+".ControlPort")
+	cache.controlPort = sim.NewLimitNumMsgPort(cache,
+		cache.numReqPerCycle*2, cache.Name()+".ControlPort")
 	cache.AddPort("Control", cache.controlPort)
 }
 
-func (b *Builder) createInternalStages(cache *Comp) {
+func (b *Builder) createPortSenders(cache *Cache) {
+	cache.topSender = sim.NewBufferedSender(
+		cache.topPort,
+		sim.NewBuffer(cache.Name()+".TopSenderBuffer",
+			cache.numReqPerCycle*4,
+		),
+	)
+	cache.bottomSender = sim.NewBufferedSender(
+		cache.bottomPort,
+		sim.NewBuffer(
+			cache.Name()+".BottomSenderBuffer",
+			cache.numReqPerCycle*4,
+		),
+	)
+	cache.controlPortSender = sim.NewBufferedSender(
+		cache.controlPort, sim.NewBuffer(
+			cache.Name()+".ControlSenderBuffer",
+			cache.numReqPerCycle*4,
+		),
+	)
+}
+
+func (b *Builder) createInternalStages(cache *Cache) {
 	cache.topParser = &topParser{cache: cache}
 	b.buildDirectoryStage(cache)
 	b.buildBankStages(cache)
@@ -223,7 +237,7 @@ func (b *Builder) createInternalStages(cache *Comp) {
 	}
 }
 
-func (b *Builder) buildDirectoryStage(cache *Comp) {
+func (b *Builder) buildDirectoryStage(cache *Cache) {
 	buf := sim.NewBuffer(
 		cache.Name()+".DirectoryStageBuffer",
 		b.numReqPerCycle,
@@ -242,7 +256,7 @@ func (b *Builder) buildDirectoryStage(cache *Comp) {
 	}
 }
 
-func (b *Builder) buildBankStages(cache *Comp) {
+func (b *Builder) buildBankStages(cache *Cache) {
 	cache.bankStages = make([]*bankStage, 1)
 
 	laneWidth := b.numReqPerCycle
@@ -270,7 +284,7 @@ func (b *Builder) buildBankStages(cache *Comp) {
 	}
 }
 
-func (b *Builder) createInternalBuffers(cache *Comp) {
+func (b *Builder) createInternalBuffers(cache *Cache) {
 	cache.dirStageBuffer = sim.NewBuffer(
 		cache.Name()+".DirStageBuffer",
 		cache.numReqPerCycle,

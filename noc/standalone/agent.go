@@ -4,7 +4,7 @@ import (
 	"log"
 	"reflect"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // TrafficMsg is a type of msg that only used in standalone network test.
@@ -18,20 +18,12 @@ func (m *TrafficMsg) Meta() *sim.MsgMeta {
 	return &m.MsgMeta
 }
 
-// Clone returns cloned TrafficMsg
-func (m *TrafficMsg) Clone() sim.Msg {
-	cloneMsg := NewTrafficMsg(m.Src, m.Dst, m.TrafficBytes)
-
-	return cloneMsg
-}
-
 // NewTrafficMsg creates a new traffic message
-func NewTrafficMsg(src, dst sim.RemotePort, byteSize int) *TrafficMsg {
+func NewTrafficMsg(src, dst sim.Port, byteSize int) *TrafficMsg {
 	msg := new(TrafficMsg)
 	msg.Src = src
 	msg.Dst = dst
 	msg.TrafficBytes = byteSize
-
 	return msg
 }
 
@@ -50,9 +42,8 @@ func NewStartSendEvent(
 ) *StartSendEvent {
 	e := new(StartSendEvent)
 	e.EventBase = sim.NewEventBase(time, src)
-	e.Msg = NewTrafficMsg(src.ToOut.AsRemote(), dst.ToOut.AsRemote(), byteSize)
+	e.Msg = NewTrafficMsg(src.ToOut, dst.ToOut, byteSize)
 	e.Msg.Meta().TrafficClass = trafficClass
-
 	return e
 }
 
@@ -67,9 +58,9 @@ type Agent struct {
 }
 
 // NotifyRecv notifies that a port has received a message.
-func (a *Agent) NotifyRecv(port sim.Port) {
-	a.ToOut.RetrieveIncoming()
-	a.TickLater()
+func (a *Agent) NotifyRecv(now sim.VTimeInSec, port sim.Port) {
+	a.ToOut.Retrieve(now)
+	a.TickLater(now)
 }
 
 // Handle defines how an agent handles events.
@@ -85,33 +76,31 @@ func (a *Agent) Handle(e sim.Event) error {
 	default:
 		log.Panicf("cannot handle event of type %s", reflect.TypeOf(e))
 	}
-
 	return nil
 }
 
 func (a *Agent) handleStartSendEvent(e *StartSendEvent) {
 	a.Buffer = append(a.Buffer, e.Msg)
-	a.TickLater()
+	a.TickLater(e.Time())
 }
 
 // Tick attempts to send a message out.
-func (a *Agent) Tick() bool {
-	return a.sendDataOut()
+func (a *Agent) Tick(now sim.VTimeInSec) bool {
+	return a.sendDataOut(now)
 }
 
-func (a *Agent) sendDataOut() bool {
+func (a *Agent) sendDataOut(now sim.VTimeInSec) bool {
 	if len(a.Buffer) == 0 {
 		return false
 	}
 
 	msg := a.Buffer[0]
-
+	msg.Meta().SendTime = now
 	err := a.ToOut.Send(msg)
 	if err == nil {
 		a.Buffer = a.Buffer[1:]
 		return true
 	}
-
 	return false
 }
 
@@ -120,7 +109,7 @@ func NewAgent(name string, engine sim.Engine) *Agent {
 	a := new(Agent)
 	a.TickingComponent = sim.NewTickingComponent(name, engine, 1*sim.GHz, a)
 
-	a.ToOut = sim.NewPort(a, 4, 4, name+".ToOut")
+	a.ToOut = sim.NewLimitNumMsgPort(a, 4, name+".ToOut")
 
 	return a
 }

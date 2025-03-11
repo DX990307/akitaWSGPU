@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 type SplitEvent struct {
@@ -31,7 +31,6 @@ func (h *SplitHandler) Handle(evt sim.Event) error {
 	h.total++
 	now := evt.Time()
 	nextTime := now + sim.VTimeInSec(rand.Float64()*2+0.5)
-
 	if nextTime < 10.0 {
 		nextEvt := SplitEvent{
 			time:    nextTime,
@@ -39,7 +38,6 @@ func (h *SplitHandler) Handle(evt sim.Event) error {
 		}
 		h.engine.Schedule(nextEvt)
 	}
-
 	nextTime = now + sim.VTimeInSec(rand.Float64()*2+0.5)
 	if nextTime < 10.0 {
 		nextEvt := SplitEvent{
@@ -48,15 +46,12 @@ func (h *SplitHandler) Handle(evt sim.Event) error {
 		}
 		h.engine.Schedule(nextEvt)
 	}
-
 	return nil
 }
 
 func ExampleEvent() {
 	rand.Seed(1)
-
 	engine := sim.NewSerialEngine()
-
 	splitHandler := SplitHandler{
 		total:  0,
 		engine: engine,

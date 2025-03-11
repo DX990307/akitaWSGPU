@@ -10,9 +10,9 @@ import (
 	// Enable profiling
 	_ "net/http/pprof"
 
-	"github.com/sarchlab/akita/v4/noc/acceptance"
-	"github.com/sarchlab/akita/v4/noc/networking/nvlink"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/noc/acceptance"
+	"github.com/sarchlab/akita/v3/noc/networking/nvlink"
+	"github.com/sarchlab/akita/v3/sim"
 	"github.com/tebeka/atexit"
 )
 
@@ -33,25 +33,28 @@ func main() {
 
 	go startProfilingServer()
 
-	rand.Seed(1)
+	for i := 0; i < 9; i++ {
+		for j := 0; j < 9; j++ {
+			fmt.Printf("Testing P2P between agent %v and agent %v\n", i, j)
+			rand.Seed(1)
 
-	engine := sim.NewSerialEngine()
-	t := acceptance.NewTest()
+			engine := sim.NewSerialEngine()
+			t := acceptance.NewTest()
 
-	agents := createNetwork(engine, t)
-	for _, agent := range agents {
-		t.RegisterAgent(agent)
+			agents := createNetwork(engine, t)
+			t.RegisterAgent(agents[i])
+			t.RegisterAgent(agents[j])
+			t.GenerateMsgs(2000)
+
+			err := engine.Run()
+			if err != nil {
+				panic(err)
+			}
+
+			t.MustHaveReceivedAllMsgs()
+			t.ReportBandwidthAchieved(engine.CurrentTime())
+		}
 	}
-
-	t.GenerateMsgs(20000)
-
-	err := engine.Run()
-	if err != nil {
-		panic(err)
-	}
-
-	t.MustHaveReceivedAllMsgs()
-	t.ReportBandwidthAchieved(engine.CurrentTime())
 
 	atexit.Exit(0)
 }
@@ -77,28 +80,20 @@ func createNetwork(
 	return agents
 }
 
-func createAgents(
-	engine sim.Engine,
-	test *acceptance.Test,
-) []*acceptance.Agent {
+func createAgents(engine sim.Engine, test *acceptance.Test) []*acceptance.Agent {
 	freq := 1.0 * sim.GHz
-
 	var agents []*acceptance.Agent
-
 	for i := 0; i < 9; i++ {
 		agent := acceptance.NewAgent(
 			engine, freq, fmt.Sprintf("Agent%d", i), 1, test)
-		agent.TickLater()
+		agent.TickLater(0)
 		agents = append(agents, agent)
+		//test.RegisterAgent(agent)
 	}
-
 	return agents
 }
 
-func createPCIeNetwork(
-	connector *nvlink.Connector,
-	agents []*acceptance.Agent,
-) []int {
+func createPCIeNetwork(connector *nvlink.Connector, agents []*acceptance.Agent) []int {
 	rootComplexID := connector.AddRootComplex(agents[0].AgentPorts)
 	switch1ID := connector.AddPCIeSwitch()
 	switch2ID := connector.AddPCIeSwitch()
@@ -117,7 +112,6 @@ func createPCIeNetwork(
 		deviceID := connector.PlugInDevice(switch2ID, agents[i].AgentPorts)
 		deviceIDs = append(deviceIDs, deviceID)
 	}
-
 	return deviceIDs
 }
 

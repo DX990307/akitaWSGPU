@@ -3,8 +3,8 @@ package tracing_test
 import (
 	"fmt"
 
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 type SampleTimeTeller struct {
@@ -35,7 +35,6 @@ func (d *SampleDomain) Start() {
 		"something",
 		nil,
 	)
-
 	d.taskIDs = append(d.taskIDs, d.nextID)
 
 	d.nextID++
@@ -46,7 +45,6 @@ func (d *SampleDomain) End() {
 		fmt.Sprintf("%d", d.taskIDs[0]),
 		d,
 	)
-
 	d.taskIDs = d.taskIDs[1:]
 }
 
@@ -70,19 +68,12 @@ func ExampleTracer() {
 	tracing.CollectTrace(domain, avgTimeTracer)
 
 	timeTeller.time = 1
-
 	domain.Start()
-
 	timeTeller.time = 1.5
-
 	domain.Start()
-
 	timeTeller.time = 2
-
 	domain.End()
-
 	timeTeller.time = 3
-
 	domain.End()
 
 	fmt.Println(totalTimeTracer.TotalTime())

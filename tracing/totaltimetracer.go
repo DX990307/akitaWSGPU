@@ -3,7 +3,7 @@ package tracing
 import (
 	"sync"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // TotalTimeTracer can collect the total time of executing a certain type of
@@ -27,7 +27,6 @@ func NewTotalTimeTracer(
 		filter:        filter,
 		inflightTasks: make(map[string]Task),
 	}
-
 	return t
 }
 
@@ -36,7 +35,6 @@ func (t *TotalTimeTracer) TotalTime() sim.VTimeInSec {
 	t.lock.Lock()
 	time := t.totalTime
 	t.lock.Unlock()
-
 	return time
 }
 
@@ -63,7 +61,6 @@ func (t *TotalTimeTracer) EndTask(task Task) {
 	task.EndTime = t.timeTeller.CurrentTime()
 
 	t.lock.Lock()
-
 	originalTask, ok := t.inflightTasks[task.ID]
 	if !ok {
 		t.lock.Unlock()

@@ -1,28 +1,32 @@
 package tlb
 
-import "github.com/sarchlab/akita/v4/sim"
+import "github.com/sarchlab/akita/v3/sim"
 
 // A Builder can build TLBs
 type Builder struct {
-	engine         sim.Engine
-	freq           sim.Freq
-	numReqPerCycle int
-	numSets        int
-	numWays        int
-	pageSize       uint64
-	lowModule      sim.RemotePort
-	numMSHREntry   int
+	engine          sim.Engine
+	freq            sim.Freq
+	numReqPerCycle  int
+	numSets         int
+	numWays         int
+	pageSize        uint64
+	lowModule       sim.Port
+	numMSHREntry    int
+	isPrediction    bool
+	bloomFilterSize int
 }
 
 // MakeBuilder returns a Builder
 func MakeBuilder() Builder {
 	return Builder{
-		freq:           1 * sim.GHz,
-		numReqPerCycle: 4,
-		numSets:        1,
-		numWays:        32,
-		pageSize:       4096,
-		numMSHREntry:   4,
+		freq:            1 * sim.GHz,
+		numReqPerCycle:  4,
+		numSets:         1,
+		numWays:         32,
+		pageSize:        4096,
+		numMSHREntry:    4,
+		isPrediction:    false,
+		bloomFilterSize: 1024,
 	}
 }
 
@@ -67,7 +71,7 @@ func (b Builder) WithNumReqPerCycle(n int) Builder {
 
 // WithLowModule sets the port that can provide the address translation in case
 // of tlb miss.
-func (b Builder) WithLowModule(lowModule sim.RemotePort) Builder {
+func (b Builder) WithLowModule(lowModule sim.Port) Builder {
 	b.lowModule = lowModule
 	return b
 }
@@ -78,9 +82,19 @@ func (b Builder) WithNumMSHREntry(num int) Builder {
 	return b
 }
 
+func (b Builder) WithPrediction() Builder {
+	b.isPrediction = true
+	return b
+}
+
+func (b Builder) WithBloomFilterSize(size int) Builder {
+	b.bloomFilterSize = size
+	return b
+}
+
 // Build creates a new TLB
-func (b Builder) Build(name string) *Comp {
-	tlb := &Comp{}
+func (b Builder) Build(name string) *TLB {
+	tlb := &TLB{}
 	tlb.TickingComponent =
 		sim.NewTickingComponent(name, b.engine, b.freq, tlb)
 
@@ -89,30 +103,31 @@ func (b Builder) Build(name string) *Comp {
 	tlb.numReqPerCycle = b.numReqPerCycle
 	tlb.pageSize = b.pageSize
 	tlb.LowModule = b.lowModule
+	tlb.isPrediction = b.isPrediction
+
+	if b.isPrediction {
+		tlb.BloomFilter = NewBloomFilter(b.bloomFilterSize)
+	}
+
 	tlb.mshr = newMSHR(b.numMSHREntry)
 
 	b.createPorts(name, tlb)
 
 	tlb.reset()
 
-	middleware := &middleware{Comp: tlb}
-	tlb.AddMiddleware(middleware)
-
 	return tlb
 }
 
-func (b Builder) createPorts(name string, c *Comp) {
-	c.topPort = sim.NewPort(c,
-		b.numReqPerCycle, b.numReqPerCycle,
+func (b Builder) createPorts(name string, tlb *TLB) {
+	tlb.topPort = sim.NewLimitNumMsgPort(tlb, b.numReqPerCycle,
 		name+".TopPort")
-	c.AddPort("Top", c.topPort)
+	tlb.AddPort("Top", tlb.topPort)
 
-	c.bottomPort = sim.NewPort(c,
-		b.numReqPerCycle, b.numReqPerCycle,
+	tlb.bottomPort = sim.NewLimitNumMsgPort(tlb, b.numReqPerCycle,
 		name+".BottomPort")
-	c.AddPort("Bottom", c.bottomPort)
+	tlb.AddPort("Bottom", tlb.bottomPort)
 
-	c.controlPort = sim.NewPort(c, 1, 1,
+	tlb.controlPort = sim.NewLimitNumMsgPort(tlb, 1,
 		name+".ControlPort")
-	c.AddPort("Control", c.controlPort)
+	tlb.AddPort("Control", tlb.controlPort)
 }

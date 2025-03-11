@@ -3,7 +3,7 @@ package standalone
 import (
 	"math/rand"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // A TrafficInjector can inject traffic to a network.
@@ -29,7 +29,6 @@ func NewGreedyTrafficInjector(engine sim.Engine) *GreedyTrafficInjector {
 	ti.PacketSize = 1024
 	ti.NumPackets = 1024
 	ti.engine = engine
-
 	return ti
 }
 
@@ -47,8 +46,8 @@ func (ti *GreedyTrafficInjector) InjectTraffic() {
 			if dstID >= i {
 				dstID++
 			}
-
 			dst := ti.agents[dstID]
+
 			pkt := NewStartSendEvent(0, a, dst, ti.PacketSize, j)
 			ti.engine.Schedule(pkt)
 		}

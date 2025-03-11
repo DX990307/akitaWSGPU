@@ -4,31 +4,31 @@ import (
 	"log"
 	"reflect"
 
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 type controlStage struct {
 	ctrlPort     sim.Port
 	transactions *[]*transaction
 	directory    cache.Directory
-	cache        *Comp
+	cache        *Cache
 	coalescer    *coalescer
 	bankStages   []*bankStage
 
 	currFlushReq *cache.FlushReq
 }
 
-func (s *controlStage) Tick() bool {
+func (s *controlStage) Tick(now sim.VTimeInSec) bool {
 	madeProgress := false
 
-	madeProgress = s.processNewRequest() || madeProgress
-	madeProgress = s.processCurrentFlush() || madeProgress
+	madeProgress = s.processNewRequest(now) || madeProgress
+	madeProgress = s.processCurrentFlush(now) || madeProgress
 
 	return madeProgress
 }
 
-func (s *controlStage) processCurrentFlush() bool {
+func (s *controlStage) processCurrentFlush(now sim.VTimeInSec) bool {
 	if s.currFlushReq == nil {
 		return false
 	}
@@ -38,27 +38,26 @@ func (s *controlStage) processCurrentFlush() bool {
 	}
 
 	rsp := cache.FlushRspBuilder{}.
-		WithSrc(s.ctrlPort.AsRemote()).
+		WithSendTime(now).
+		WithSrc(s.ctrlPort).
 		WithDst(s.currFlushReq.Src).
 		WithRspTo(s.currFlushReq.ID).
 		Build()
-
 	err := s.ctrlPort.Send(rsp)
 	if err != nil {
 		return false
 	}
 
-	s.hardResetCache()
+	s.hardResetCache(now)
 	s.currFlushReq = nil
 
 	return true
 }
 
-func (s *controlStage) hardResetCache() {
-	s.flushPort(s.cache.topPort)
-	s.flushPort(s.cache.bottomPort)
+func (s *controlStage) hardResetCache(now sim.VTimeInSec) {
+	s.flushPort(s.cache.topPort, now)
+	s.flushPort(s.cache.bottomPort, now)
 	s.flushBuffer(s.cache.dirBuf)
-
 	for _, bankBuf := range s.cache.bankBufs {
 		s.flushBuffer(bankBuf)
 	}
@@ -66,7 +65,6 @@ func (s *controlStage) hardResetCache() {
 	s.directory.Reset()
 	s.cache.mshr.Reset()
 	s.cache.coalesceStage.Reset()
-
 	for _, bankStage := range s.cache.bankStages {
 		bankStage.Reset()
 	}
@@ -79,9 +77,9 @@ func (s *controlStage) hardResetCache() {
 	}
 }
 
-func (s *controlStage) flushPort(port sim.Port) {
-	for port.PeekIncoming() != nil {
-		port.RetrieveIncoming()
+func (s *controlStage) flushPort(port sim.Port, now sim.VTimeInSec) {
+	for port.Peek() != nil {
+		port.Retrieve(now)
 	}
 }
 
@@ -90,51 +88,54 @@ func (s *controlStage) flushBuffer(buffer sim.Buffer) {
 	}
 }
 
-func (s *controlStage) processNewRequest() bool {
-	req := s.ctrlPort.PeekIncoming()
+func (s *controlStage) processNewRequest(now sim.VTimeInSec) bool {
+	req := s.ctrlPort.Peek()
 	if req == nil {
 		return false
 	}
 
 	switch req := req.(type) {
 	case *cache.FlushReq:
-		return s.startCacheFlush(req)
+		return s.startCacheFlush(now, req)
 	case *cache.RestartReq:
-		return s.doCacheRestart(req)
+		return s.doCacheRestart(now, req)
 	default:
 		log.Panicf("cannot handle request of type %s ",
 			reflect.TypeOf(req))
 	}
-
 	panic("never")
 }
 
-func (s *controlStage) startCacheFlush(req *cache.FlushReq) bool {
+func (s *controlStage) startCacheFlush(
+	now sim.VTimeInSec,
+	req *cache.FlushReq,
+) bool {
 	if s.currFlushReq != nil {
 		return false
 	}
 
 	s.currFlushReq = req
-	s.ctrlPort.RetrieveIncoming()
+	s.ctrlPort.Retrieve(now)
 
 	return true
 }
 
-func (s *controlStage) doCacheRestart(req *cache.RestartReq) bool {
+func (s *controlStage) doCacheRestart(now sim.VTimeInSec, req *cache.RestartReq) bool {
 	s.cache.isPaused = false
 
-	s.ctrlPort.RetrieveIncoming()
+	s.ctrlPort.Retrieve(now)
 
-	for s.cache.topPort.PeekIncoming() != nil {
-		s.cache.topPort.RetrieveIncoming()
+	for s.cache.topPort.Peek() != nil {
+		s.cache.topPort.Retrieve(now)
 	}
 
-	for s.cache.bottomPort.PeekIncoming() != nil {
-		s.cache.bottomPort.RetrieveIncoming()
+	for s.cache.bottomPort.Peek() != nil {
+		s.cache.bottomPort.Retrieve(now)
 	}
 
 	rsp := cache.RestartRspBuilder{}.
-		WithSrc(s.ctrlPort.AsRemote()).
+		WithSendTime(now).
+		WithSrc(s.ctrlPort).
 		WithDst(req.Src).
 		Build()
 

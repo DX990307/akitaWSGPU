@@ -1,9 +1,9 @@
 package org
 
 import (
-	"github.com/sarchlab/akita/v4/mem/dram/internal/signal"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/signal"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 // BankState represents the current state of a bank.
@@ -47,8 +47,8 @@ func (b *BankImpl) Name() string {
 }
 
 // Tick updates the internal states of the bank.
-func (b *BankImpl) Tick() (madeProgress bool) {
-	madeProgress = b.countDownCurrentCmd() || madeProgress
+func (b *BankImpl) Tick(now sim.VTimeInSec) (madeProgress bool) {
+	madeProgress = b.countDownCurrentCmd(now) || madeProgress
 	madeProgress = b.countDownTiming() || madeProgress
 
 	return madeProgress
@@ -61,15 +61,14 @@ func (b *BankImpl) countDownTiming() (madeProgress bool) {
 			madeProgress = true
 		}
 	}
-
 	return madeProgress
 }
 
-func (b *BankImpl) countDownCurrentCmd() (madeProgress bool) {
+func (b *BankImpl) countDownCurrentCmd(now sim.VTimeInSec) (madeProgress bool) {
 	if b.currentCmd != nil {
 		b.currentCmd.CycleLeft--
 		if b.currentCmd.CycleLeft <= 0 {
-			b.completeCurrentCmd()
+			b.completeCurrentCmd(now)
 		}
 
 		madeProgress = true
@@ -78,7 +77,7 @@ func (b *BankImpl) countDownCurrentCmd() (madeProgress bool) {
 	return madeProgress
 }
 
-func (b *BankImpl) completeCurrentCmd() {
+func (b *BankImpl) completeCurrentCmd(now sim.VTimeInSec) {
 	b.currentCmd.CycleLeft = 0
 
 	tracing.EndTask(b.currentCmd.ID, b)
@@ -97,6 +96,7 @@ func (b *BankImpl) completeCurrentCmd() {
 
 // GetReadyCommand returns the next command is ready to be issued.
 func (b *BankImpl) GetReadyCommand(
+	now sim.VTimeInSec,
 	cmd *signal.Command,
 ) *signal.Command {
 	requiredKind := b.getRequiredCommandKind(cmd)
@@ -107,16 +107,13 @@ func (b *BankImpl) GetReadyCommand(
 	if b.cyclesToCmdAvailable[requiredKind] == 0 {
 		readyCmd := cmd.Clone()
 		readyCmd.Kind = requiredKind
-
 		return readyCmd
 	}
 
 	return nil
 }
 
-func (b *BankImpl) getRequiredCommandKind(
-	cmd *signal.Command,
-) signal.CommandKind {
+func (b *BankImpl) getRequiredCommandKind(cmd *signal.Command) signal.CommandKind {
 	key := cmdKindTableKey{b.state, cmd.Kind}
 
 	kindFunc, found := requiredCmdKindTable[key]
@@ -128,11 +125,10 @@ func (b *BankImpl) getRequiredCommandKind(
 }
 
 // StartCommand starts a new command in the Bank.
-func (b *BankImpl) StartCommand(cmd *signal.Command) {
+func (b *BankImpl) StartCommand(now sim.VTimeInSec, cmd *signal.Command) {
 	if b.currentCmd != nil {
 		panic("previous cmd is not completed")
 	}
-
 	b.currentCmd = cmd
 	b.currentCmd.CycleLeft = b.CmdCycles[cmd.Kind]
 
@@ -145,9 +141,6 @@ func (b *BankImpl) StartCommand(cmd *signal.Command) {
 
 	updateFunc(b, cmd)
 
-	// fmt.Printf("%.10f, %s, cmd started, %s\n",
-	// 	now, b.Name(), b.currentCmd.Kind.String())
-
 	tracing.StartTask(
 		cmd.ID,
 		cmd.SubTrans.ID,
@@ -156,19 +149,22 @@ func (b *BankImpl) StartCommand(cmd *signal.Command) {
 		cmd.Kind.String(),
 		nil,
 	)
+
+	// fmt.Printf("%.10f, %s, cmd started, %s\n",
+	// 	now, b.Name(), b.currentCmd.Kind.String())
 }
 
 // UpdateTiming updates timing related states of the bank.
 func (b *BankImpl) UpdateTiming(cmdKind signal.CommandKind, cycleNeeded int) {
 	t := b.cyclesToCmdAvailable[cmdKind]
 
-	//fmt.Printf("%s, cmd timing updated, %s, %d, %d\n",
-	//	b.Name(), cmdKind.String(),
-	//	cycleNeeded, b.cyclesToCmdAvailable[cmdKind])
-
 	if t < cycleNeeded {
 		b.cyclesToCmdAvailable[cmdKind] = cycleNeeded
 	}
+
+	//fmt.Printf("%s, cmd timing updated, %s, %d, %d\n",
+	//	b.Name(), cmdKind.String(),
+	//	cycleNeeded, b.cyclesToCmdAvailable[cmdKind])
 }
 
 type cmdKindTableKey struct {
@@ -176,15 +172,8 @@ type cmdKindTableKey struct {
 	cmdKind   signal.CommandKind
 }
 
-type requiredCmdKindFunc func(
-	b *BankImpl,
-	cmd *signal.Command,
-) signal.CommandKind
-
-type updateStateFunc func(
-	b *BankImpl,
-	cmd *signal.Command,
-)
+type requiredCmdKindFunc func(b *BankImpl, cmd *signal.Command) signal.CommandKind
+type updateStateFunc func(b *BankImpl, cmd *signal.Command)
 
 var requiredCmdKindTable map[cmdKindTableKey]requiredCmdKindFunc
 var stateUpdateTable map[cmdKindTableKey]updateStateFunc
@@ -200,7 +189,6 @@ func actionOnOpenRowOrPrecharge(
 	if b.openRow == cmd.Row {
 		return cmd.Kind
 	}
-
 	return signal.CmdKindPrecharge
 }
 
@@ -217,7 +205,6 @@ func doNothing(b *BankImpl, cmd *signal.Command) {
 	// Do nothing
 }
 
-// nolint: lll
 func init() {
 	requiredCmdKindTable = map[cmdKindTableKey]requiredCmdKindFunc{
 		{BankStateClosed, signal.CmdKindRead}:           returnCmdKindActive,

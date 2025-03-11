@@ -1,9 +1,9 @@
 package writeevict
 
 import (
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/mem/vm"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/mem/vm"
 )
 
 type bankActionType int
@@ -39,7 +39,6 @@ func (t *transaction) Address() uint64 {
 	if t.read != nil {
 		return t.read.Address
 	}
-
 	return t.write.Address
 }
 
@@ -47,6 +46,5 @@ func (t *transaction) PID() vm.PID {
 	if t.read != nil {
 		return t.read.PID
 	}
-
 	return t.write.PID
 }

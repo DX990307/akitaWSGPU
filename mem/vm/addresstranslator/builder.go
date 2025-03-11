@@ -1,17 +1,17 @@
 package addresstranslator
 
 import (
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // A Builder can create address translators
 type Builder struct {
 	engine              sim.Engine
 	freq                sim.Freq
-	translationProvider sim.RemotePort
+	translationProvider sim.Port
 	ctrlPort            sim.Port
-	addressToPortMapper mem.AddressToPortMapper
+	lowModuleFinder     mem.LowModuleFinder
 	numReqPerCycle      int
 	log2PageSize        uint64
 	deviceID            uint64
@@ -41,15 +41,15 @@ func (b Builder) WithFreq(freq sim.Freq) Builder {
 
 // WithTranslationProvider sets the port that can provide the translation
 // service. The port must be a port on a TLB or an MMU.
-func (b Builder) WithTranslationProvider(p sim.RemotePort) Builder {
+func (b Builder) WithTranslationProvider(p sim.Port) Builder {
 	b.translationProvider = p
 	return b
 }
 
-// WithAddressToPortMapper sets the low modules finder that can tell the address
+// WithLowModuleFinder sets the low modules finder that can tell the address
 // translators where to send the memory access request to.
-func (b Builder) WithAddressToPortMapper(f mem.AddressToPortMapper) Builder {
-	b.addressToPortMapper = f
+func (b Builder) WithLowModuleFinder(f mem.LowModuleFinder) Builder {
+	b.lowModuleFinder = f
 	return b
 }
 
@@ -79,38 +79,35 @@ func (b Builder) WithCtrlPort(p sim.Port) Builder {
 }
 
 // Build returns a new AddressTranslator
-func (b Builder) Build(name string) *Comp {
-	t := &Comp{}
+func (b Builder) Build(name string) *AddressTranslator {
+	t := &AddressTranslator{}
 	t.TickingComponent = sim.NewTickingComponent(
 		name, b.engine, b.freq, t)
 
 	b.createPorts(name, t)
 
 	t.translationProvider = b.translationProvider
-	t.addressToPortMapper = b.addressToPortMapper
+	t.lowModuleFinder = b.lowModuleFinder
 	t.numReqPerCycle = b.numReqPerCycle
 	t.log2PageSize = b.log2PageSize
 	t.deviceID = b.deviceID
 
-	middleware := &middleware{Comp: t}
-	t.AddMiddleware(middleware)
-
 	return t
 }
 
-func (b Builder) createPorts(name string, t *Comp) {
-	t.topPort = sim.NewPort(t, b.numReqPerCycle, b.numReqPerCycle,
+func (b Builder) createPorts(name string, t *AddressTranslator) {
+	t.topPort = sim.NewLimitNumMsgPort(t, b.numReqPerCycle,
 		name+".TopPort")
 	t.AddPort("Top", t.topPort)
 
-	t.bottomPort = sim.NewPort(t, b.numReqPerCycle, b.numReqPerCycle,
+	t.bottomPort = sim.NewLimitNumMsgPort(t, b.numReqPerCycle,
 		name+".BottomPort")
 	t.AddPort("Bottom", t.bottomPort)
 
-	t.translationPort = sim.NewPort(t, b.numReqPerCycle, b.numReqPerCycle,
+	t.translationPort = sim.NewLimitNumMsgPort(t, b.numReqPerCycle,
 		name+".TranslationPort")
 	t.AddPort("Translation", t.translationPort)
 
-	t.ctrlPort = sim.NewPort(t, 1, 1, name+".CtrlPort")
+	t.ctrlPort = sim.NewLimitNumMsgPort(t, 1, name+".CtrlPort")
 	t.AddPort("Control", t.ctrlPort)
 }

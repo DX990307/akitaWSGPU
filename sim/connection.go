@@ -11,13 +11,16 @@ func NewSendError() *SendError {
 
 // A Connection is responsible for delivering messages to its destination.
 type Connection interface {
-	Named
 	Hookable
 
-	PlugIn(port Port)
+	CanSend(src Port) bool
+	Send(msg Msg) *SendError
+
+	// PlugIn connects a port to the connection. The connection should reserve
+	// a buffer that can hold `sourceSideBufSize` messages.
+	PlugIn(port Port, sourceSideBufSize int)
 	Unplug(port Port)
-	NotifyAvailable(port Port)
-	NotifySend()
+	NotifyAvailable(now VTimeInSec, port Port)
 }
 
 // HookPosConnStartSend marks a connection accept to send a message.

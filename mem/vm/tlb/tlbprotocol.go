@@ -1,12 +1,11 @@
 package tlb
 
 import (
-	"github.com/sarchlab/akita/v4/mem/vm"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/vm"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
-// A FlushReq asks the TLB to invalidate certain entries. It will also not block
-// all incoming and outgoing ports
+// A FlushReq asks the TLB to invalidate certain entries. It will also not block all incoming and outgoing ports
 type FlushReq struct {
 	sim.MsgMeta
 	VAddr []uint64
@@ -18,29 +17,30 @@ func (r *FlushReq) Meta() *sim.MsgMeta {
 	return &r.MsgMeta
 }
 
-// Clone returns cloned FlushReq with different ID
-func (r *FlushReq) Clone() sim.Msg {
-	cloneMsg := *r
-	cloneMsg.ID = sim.GetIDGenerator().Generate()
-
-	return &cloneMsg
-}
-
 // FlushReqBuilder can build AT flush requests
 type FlushReqBuilder struct {
-	src, dst sim.RemotePort
+	sendTime sim.VTimeInSec
+	src, dst sim.Port
 	vAddrs   []uint64
 	pid      vm.PID
 }
 
+// WithSendTime sets the send time of the request to build.:w
+func (b FlushReqBuilder) WithSendTime(
+	t sim.VTimeInSec,
+) FlushReqBuilder {
+	b.sendTime = t
+	return b
+}
+
 // WithSrc sets the source of the request to build.
-func (b FlushReqBuilder) WithSrc(src sim.RemotePort) FlushReqBuilder {
+func (b FlushReqBuilder) WithSrc(src sim.Port) FlushReqBuilder {
 	b.src = src
 	return b
 }
 
 // WithDst sets the destination of the request to build.
-func (b FlushReqBuilder) WithDst(dst sim.RemotePort) FlushReqBuilder {
+func (b FlushReqBuilder) WithDst(dst sim.Port) FlushReqBuilder {
 	b.dst = dst
 	return b
 }
@@ -63,9 +63,9 @@ func (b FlushReqBuilder) Build() *FlushReq {
 	r.ID = sim.GetIDGenerator().Generate()
 	r.Src = b.src
 	r.Dst = b.dst
+	r.SendTime = b.sendTime
 	r.VAddr = b.vAddrs
 	r.PID = b.pid
-
 	return r
 }
 
@@ -79,27 +79,28 @@ func (r *FlushRsp) Meta() *sim.MsgMeta {
 	return &r.MsgMeta
 }
 
-// Clone returns cloned FlushRsp with different ID
-func (r *FlushRsp) Clone() sim.Msg {
-	cloneMsg := *r
-	cloneMsg.ID = sim.GetIDGenerator().Generate()
-
-	return &cloneMsg
-}
-
 // FlushRspBuilder can build AT flush rsp
 type FlushRspBuilder struct {
-	src, dst sim.RemotePort
+	sendTime sim.VTimeInSec
+	src, dst sim.Port
+}
+
+// WithSendTime sets the send time of the request to build.:w
+func (b FlushRspBuilder) WithSendTime(
+	t sim.VTimeInSec,
+) FlushRspBuilder {
+	b.sendTime = t
+	return b
 }
 
 // WithSrc sets the source of the request to build.
-func (b FlushRspBuilder) WithSrc(src sim.RemotePort) FlushRspBuilder {
+func (b FlushRspBuilder) WithSrc(src sim.Port) FlushRspBuilder {
 	b.src = src
 	return b
 }
 
 // WithDst sets the destination of the request to build.
-func (b FlushRspBuilder) WithDst(dst sim.RemotePort) FlushRspBuilder {
+func (b FlushRspBuilder) WithDst(dst sim.Port) FlushRspBuilder {
 	b.dst = dst
 	return b
 }
@@ -110,12 +111,12 @@ func (b FlushRspBuilder) Build() *FlushRsp {
 	r.ID = sim.GetIDGenerator().Generate()
 	r.Src = b.src
 	r.Dst = b.dst
+	r.SendTime = b.sendTime
 
 	return r
 }
 
-// A RestartReq is a request to TLB to start accepting requests and resume
-// operations
+// A RestartReq is a request to TLB to start accepting requests and resume operations
 type RestartReq struct {
 	sim.MsgMeta
 }
@@ -125,27 +126,28 @@ func (r *RestartReq) Meta() *sim.MsgMeta {
 	return &r.MsgMeta
 }
 
-// Clone returns cloned RestartReq with different ID
-func (r *RestartReq) Clone() sim.Msg {
-	cloneMsg := *r
-	cloneMsg.ID = sim.GetIDGenerator().Generate()
-
-	return &cloneMsg
-}
-
 // RestartReqBuilder can build TLB restart requests.
 type RestartReqBuilder struct {
-	src, dst sim.RemotePort
+	sendTime sim.VTimeInSec
+	src, dst sim.Port
+}
+
+// WithSendTime sets the send time of the request to build.
+func (b RestartReqBuilder) WithSendTime(
+	t sim.VTimeInSec,
+) RestartReqBuilder {
+	b.sendTime = t
+	return b
 }
 
 // WithSrc sets the source of the request to build.
-func (b RestartReqBuilder) WithSrc(src sim.RemotePort) RestartReqBuilder {
+func (b RestartReqBuilder) WithSrc(src sim.Port) RestartReqBuilder {
 	b.src = src
 	return b
 }
 
 // WithDst sets the destination of the request to build.
-func (b RestartReqBuilder) WithDst(dst sim.RemotePort) RestartReqBuilder {
+func (b RestartReqBuilder) WithDst(dst sim.Port) RestartReqBuilder {
 	b.dst = dst
 	return b
 }
@@ -156,6 +158,7 @@ func (b RestartReqBuilder) Build() *RestartReq {
 	r.ID = sim.GetIDGenerator().Generate()
 	r.Src = b.src
 	r.Dst = b.dst
+	r.SendTime = b.sendTime
 
 	return r
 }
@@ -170,27 +173,28 @@ func (r *RestartRsp) Meta() *sim.MsgMeta {
 	return &r.MsgMeta
 }
 
-// Clone returns cloned RestartRsp with different ID
-func (r *RestartRsp) Clone() sim.Msg {
-	cloneMsg := *r
-	cloneMsg.ID = sim.GetIDGenerator().Generate()
-
-	return &cloneMsg
-}
-
 // RestartRspBuilder can build AT flush rsp
 type RestartRspBuilder struct {
-	src, dst sim.RemotePort
+	sendTime sim.VTimeInSec
+	src, dst sim.Port
+}
+
+// WithSendTime sets the send time of the request to build.:w
+func (b RestartRspBuilder) WithSendTime(
+	t sim.VTimeInSec,
+) RestartRspBuilder {
+	b.sendTime = t
+	return b
 }
 
 // WithSrc sets the source of the request to build.
-func (b RestartRspBuilder) WithSrc(src sim.RemotePort) RestartRspBuilder {
+func (b RestartRspBuilder) WithSrc(src sim.Port) RestartRspBuilder {
 	b.src = src
 	return b
 }
 
 // WithDst sets the destination of the request to build.
-func (b RestartRspBuilder) WithDst(dst sim.RemotePort) RestartRspBuilder {
+func (b RestartRspBuilder) WithDst(dst sim.Port) RestartRspBuilder {
 	b.dst = dst
 	return b
 }
@@ -201,6 +205,7 @@ func (b RestartRspBuilder) Build() *RestartRsp {
 	r.ID = sim.GetIDGenerator().Generate()
 	r.Src = b.src
 	r.Dst = b.dst
+	r.SendTime = b.sendTime
 
 	return r
 }

@@ -8,8 +8,8 @@ import (
 	reflect "reflect"
 
 	gomock "github.com/golang/mock/gomock"
-	signal "github.com/sarchlab/akita/v4/mem/dram/internal/signal"
-	sim "github.com/sarchlab/akita/v4/sim"
+	signal "github.com/sarchlab/akita/v3/mem/dram/internal/signal"
+	sim "github.com/sarchlab/akita/v3/sim"
 )
 
 // MockBank is a mock of Bank interface.
@@ -48,17 +48,17 @@ func (mr *MockBankMockRecorder) AcceptHook(hook interface{}) *gomock.Call {
 }
 
 // GetReadyCommand mocks base method.
-func (m *MockBank) GetReadyCommand(cmd *signal.Command) *signal.Command {
+func (m *MockBank) GetReadyCommand(now sim.VTimeInSec, cmd *signal.Command) *signal.Command {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetReadyCommand", cmd)
+	ret := m.ctrl.Call(m, "GetReadyCommand", now, cmd)
 	ret0, _ := ret[0].(*signal.Command)
 	return ret0
 }
 
 // GetReadyCommand indicates an expected call of GetReadyCommand.
-func (mr *MockBankMockRecorder) GetReadyCommand(cmd interface{}) *gomock.Call {
+func (mr *MockBankMockRecorder) GetReadyCommand(now, cmd interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetReadyCommand", reflect.TypeOf((*MockBank)(nil).GetReadyCommand), cmd)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetReadyCommand", reflect.TypeOf((*MockBank)(nil).GetReadyCommand), now, cmd)
 }
 
 // Hooks mocks base method.
@@ -116,29 +116,29 @@ func (mr *MockBankMockRecorder) NumHooks() *gomock.Call {
 }
 
 // StartCommand mocks base method.
-func (m *MockBank) StartCommand(cmd *signal.Command) {
+func (m *MockBank) StartCommand(now sim.VTimeInSec, cmd *signal.Command) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "StartCommand", cmd)
+	m.ctrl.Call(m, "StartCommand", now, cmd)
 }
 
 // StartCommand indicates an expected call of StartCommand.
-func (mr *MockBankMockRecorder) StartCommand(cmd interface{}) *gomock.Call {
+func (mr *MockBankMockRecorder) StartCommand(now, cmd interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartCommand", reflect.TypeOf((*MockBank)(nil).StartCommand), cmd)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartCommand", reflect.TypeOf((*MockBank)(nil).StartCommand), now, cmd)
 }
 
 // Tick mocks base method.
-func (m *MockBank) Tick() bool {
+func (m *MockBank) Tick(now sim.VTimeInSec) bool {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Tick")
+	ret := m.ctrl.Call(m, "Tick", now)
 	ret0, _ := ret[0].(bool)
 	return ret0
 }
 
 // Tick indicates an expected call of Tick.
-func (mr *MockBankMockRecorder) Tick() *gomock.Call {
+func (mr *MockBankMockRecorder) Tick(now interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tick", reflect.TypeOf((*MockBank)(nil).Tick))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tick", reflect.TypeOf((*MockBank)(nil).Tick), now)
 }
 
 // UpdateTiming mocks base method.

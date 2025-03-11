@@ -3,7 +3,7 @@ package tracing
 import (
 	"sync"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // AverageTimeTracer can collect the total time of executing a certain type of
@@ -28,7 +28,6 @@ func NewAverageTimeTracer(
 		filter:        filter,
 		inflightTasks: make(map[string]Task),
 	}
-
 	return t
 }
 
@@ -37,7 +36,6 @@ func (t *AverageTimeTracer) AverageTime() sim.VTimeInSec {
 	t.lock.Lock()
 	time := t.averageTime
 	t.lock.Unlock()
-
 	return time
 }
 
@@ -73,7 +71,6 @@ func (t *AverageTimeTracer) EndTask(task Task) {
 
 	t.lock.Lock()
 	originalTask, ok := t.inflightTasks[task.ID]
-
 	if !ok {
 		t.lock.Unlock()
 		return
@@ -83,9 +80,7 @@ func (t *AverageTimeTracer) EndTask(task Task) {
 	t.averageTime = sim.VTimeInSec(
 		(float64(t.averageTime)*float64(t.taskCount) + float64(taskTime)) /
 			float64(t.taskCount+1))
-
 	delete(t.inflightTasks, task.ID)
-
 	t.taskCount++
 	t.lock.Unlock()
 }

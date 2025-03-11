@@ -4,10 +4,10 @@ package pcie
 import (
 	"math"
 
-	"github.com/sarchlab/akita/v4/monitoring"
-	"github.com/sarchlab/akita/v4/noc/networking/networkconnector"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/monitoring"
+	"github.com/sarchlab/akita/v3/noc/networking/networkconnector"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 // Connector can connect devices into a PCIe network.
@@ -45,7 +45,6 @@ func (c *Connector) WithEngine(engine sim.Engine) *Connector {
 func (c *Connector) WithFrequency(freq sim.Freq) *Connector {
 	c.connector = c.connector.WithDefaultFreq(freq)
 	c.freq = freq
-
 	return c
 }
 

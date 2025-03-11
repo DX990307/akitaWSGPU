@@ -4,60 +4,41 @@ import (
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/mem/vm"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/mem/vm"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 var _ = Describe("Address Translator", func() {
 	var (
-		mockCtrl            *gomock.Controller
-		topPort             *MockPort
-		bottomPort          *MockPort
-		translationPort     *MockPort
-		ctrlPort            *MockPort
-		addressToPortMapper *MockAddressToPortMapper
+		mockCtrl        *gomock.Controller
+		topPort         *MockPort
+		bottomPort      *MockPort
+		translationPort *MockPort
+		ctrlPort        *MockPort
+		lowModuleFinder *MockLowModuleFinder
 
-		t           *Comp
-		tMiddleware *middleware
+		t *AddressTranslator
 	)
 
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
 		topPort = NewMockPort(mockCtrl)
-		topPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("TopPort")).
-			AnyTimes()
 		bottomPort = NewMockPort(mockCtrl)
-		bottomPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("BottomPort")).
-			AnyTimes()
 		ctrlPort = NewMockPort(mockCtrl)
-		ctrlPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("CtrlPort")).
-			AnyTimes()
 		translationPort = NewMockPort(mockCtrl)
-		translationPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("TranslationPort")).
-			AnyTimes()
-		addressToPortMapper = NewMockAddressToPortMapper(mockCtrl)
+		lowModuleFinder = NewMockLowModuleFinder(mockCtrl)
 
 		builder := MakeBuilder().
 			WithLog2PageSize(12).
 			WithFreq(1).
-			WithAddressToPortMapper(addressToPortMapper)
+			WithLowModuleFinder(lowModuleFinder)
 		t = builder.Build("AddressTranslator")
 		t.log2PageSize = 12
 		t.topPort = topPort
 		t.bottomPort = bottomPort
 		t.translationPort = translationPort
 		t.ctrlPort = ctrlPort
-
-		tMiddleware = t.Middlewares()[0].(*middleware)
 	})
 
 	AfterEach(func() {
@@ -71,6 +52,7 @@ var _ = Describe("Address Translator", func() {
 
 		BeforeEach(func() {
 			req = mem.ReadReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x100).
 				WithByteSize(4).
 				WithPID(1).
@@ -78,14 +60,15 @@ var _ = Describe("Address Translator", func() {
 		})
 
 		It("should do nothing if there is no request", func() {
-			topPort.EXPECT().PeekIncoming().Return(nil)
-			madeProgress := tMiddleware.translate()
+			topPort.EXPECT().Peek().Return(nil)
+			madeProgress := t.translate(10)
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should send translation", func() {
 			var transReqReturn *vm.TranslationReq
 			transReq := vm.TranslationReqBuilder{}.
+				WithSendTime(6).
 				WithPID(1).
 				WithVAddr(0x100).
 				WithDeviceID(1).
@@ -97,15 +80,15 @@ var _ = Describe("Address Translator", func() {
 			t.transactions = append(t.transactions, translation)
 			req.Address = 0x1040
 
-			topPort.EXPECT().PeekIncoming().Return(req)
-			topPort.EXPECT().RetrieveIncoming()
+			topPort.EXPECT().Peek().Return(req)
+			topPort.EXPECT().Retrieve(gomock.Any())
 			translationPort.EXPECT().Send(gomock.Any()).
 				DoAndReturn(func(req *vm.TranslationReq) *sim.SendError {
 					transReqReturn = req
 					return nil
 				})
 
-			needTick := tMiddleware.translate()
+			needTick := t.translate(10)
 
 			Expect(needTick).To(BeTrue())
 			Expect(translation.incomingReqs).NotTo(ContainElement(req))
@@ -115,12 +98,12 @@ var _ = Describe("Address Translator", func() {
 		})
 
 		It("should stall if cannot send for translation", func() {
-			topPort.EXPECT().PeekIncoming().Return(req)
+			topPort.EXPECT().Peek().Return(req)
 			translationPort.EXPECT().
 				Send(gomock.Any()).
 				Return(&sim.SendError{})
 
-			needTick := tMiddleware.translate()
+			needTick := t.translate(10)
 
 			Expect(needTick).To(BeFalse())
 			Expect(t.transactions).To(HaveLen(0))
@@ -135,6 +118,7 @@ var _ = Describe("Address Translator", func() {
 
 		BeforeEach(func() {
 			transReq1 = vm.TranslationReqBuilder{}.
+				WithSendTime(0).
 				WithPID(1).
 				WithVAddr(0x100).
 				WithDeviceID(1).
@@ -143,6 +127,7 @@ var _ = Describe("Address Translator", func() {
 				translationReq: transReq1,
 			}
 			transReq2 = vm.TranslationReqBuilder{}.
+				WithSendTime(0).
 				WithPID(1).
 				WithVAddr(0x100).
 				WithDeviceID(1).
@@ -154,17 +139,19 @@ var _ = Describe("Address Translator", func() {
 		})
 
 		It("should do nothing if there is no translation return", func() {
-			translationPort.EXPECT().PeekIncoming().Return(nil)
-			needTick := tMiddleware.parseTranslation()
+			translationPort.EXPECT().Peek().Return(nil)
+			needTick := t.parseTranslation(10)
 			Expect(needTick).To(BeFalse())
 		})
 
 		It("should stall if send failed", func() {
 			req := mem.ReadReqBuilder{}.
+				WithSendTime(6).
 				WithAddress(0x10040).
 				WithByteSize(4).
 				Build()
 			translationRsp := vm.TranslationRspBuilder{}.
+				WithSendTime(8).
 				WithRspTo(transReq1.ID).
 				WithPage(vm.Page{
 					PID:   1,
@@ -177,21 +164,23 @@ var _ = Describe("Address Translator", func() {
 			trans1.translationRsp = translationRsp
 			trans1.translationDone = true
 
-			translationPort.EXPECT().PeekIncoming().Return(translationRsp)
-			addressToPortMapper.EXPECT().Find(uint64(0x20040))
+			translationPort.EXPECT().Peek().Return(translationRsp)
+			lowModuleFinder.EXPECT().Find(uint64(0x20040))
 			bottomPort.EXPECT().Send(gomock.Any()).Return(sim.NewSendError())
 
-			madeProgress := tMiddleware.parseTranslation()
+			madeProgress := t.parseTranslation(10)
 
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should forward read request", func() {
 			req := mem.ReadReqBuilder{}.
+				WithSendTime(6).
 				WithAddress(0x10040).
 				WithByteSize(4).
 				Build()
 			translationRsp := vm.TranslationRspBuilder{}.
+				WithSendTime(8).
 				WithRspTo(transReq1.ID).
 				WithPage(vm.Page{
 					PID:   1,
@@ -204,20 +193,21 @@ var _ = Describe("Address Translator", func() {
 			trans1.translationRsp = translationRsp
 			trans1.translationDone = true
 
-			translationPort.EXPECT().PeekIncoming().Return(translationRsp)
-			translationPort.EXPECT().RetrieveIncoming()
-			addressToPortMapper.EXPECT().Find(uint64(0x20040))
+			translationPort.EXPECT().Peek().Return(translationRsp)
+			translationPort.EXPECT().Retrieve(sim.VTimeInSec(10))
+			lowModuleFinder.EXPECT().Find(uint64(0x20040))
 			bottomPort.EXPECT().Send(gomock.Any()).
 				Do(func(read *mem.ReadReq) {
 					Expect(read).NotTo(BeIdenticalTo(req))
+					Expect(read.SendTime).To(Equal(sim.VTimeInSec(10)))
 					Expect(read.PID).To(Equal(vm.PID(0)))
 					Expect(read.Address).To(Equal(uint64(0x20040)))
 					Expect(read.AccessByteSize).To(Equal(uint64(4)))
-					Expect(read.Src).To(Equal(bottomPort.AsRemote()))
+					Expect(read.Src).To(BeIdenticalTo(bottomPort))
 				}).
 				Return(nil)
 
-			madeProgress := tMiddleware.parseTranslation()
+			madeProgress := t.parseTranslation(10)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(t.transactions).NotTo(ContainElement(trans1))
@@ -228,11 +218,13 @@ var _ = Describe("Address Translator", func() {
 			data := []byte{1, 2, 3, 4}
 			dirty := []bool{false, true, false, true}
 			write := mem.WriteReqBuilder{}.
+				WithSendTime(6).
 				WithAddress(0x10040).
 				WithData(data).
 				WithDirtyMask(dirty).
 				Build()
 			translationRsp := vm.TranslationRspBuilder{}.
+				WithSendTime(8).
 				WithRspTo(transReq1.ID).
 				WithPage(vm.Page{
 					PID:   1,
@@ -244,21 +236,22 @@ var _ = Describe("Address Translator", func() {
 			trans1.translationRsp = translationRsp
 			trans1.translationDone = true
 
-			translationPort.EXPECT().PeekIncoming().Return(translationRsp)
-			translationPort.EXPECT().RetrieveIncoming()
-			addressToPortMapper.EXPECT().Find(uint64(0x20040))
+			translationPort.EXPECT().Peek().Return(translationRsp)
+			translationPort.EXPECT().Retrieve(sim.VTimeInSec(10))
+			lowModuleFinder.EXPECT().Find(uint64(0x20040))
 			bottomPort.EXPECT().Send(gomock.Any()).
 				Do(func(req *mem.WriteReq) {
 					Expect(req).NotTo(BeIdenticalTo(write))
+					Expect(req.SendTime).To(Equal(sim.VTimeInSec(10)))
 					Expect(req.PID).To(Equal(vm.PID(0)))
 					Expect(req.Address).To(Equal(uint64(0x20040)))
-					Expect(req.Src).To(Equal(bottomPort.AsRemote()))
+					Expect(req.Src).To(BeIdenticalTo(bottomPort))
 					Expect(req.Data).To(Equal(data))
 					Expect(req.DirtyMask).To(Equal(dirty))
 				}).
 				Return(nil)
 
-			madeProgress := tMiddleware.parseTranslation()
+			madeProgress := t.parseTranslation(10)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(t.transactions).NotTo(ContainElement(trans1))
@@ -276,17 +269,21 @@ var _ = Describe("Address Translator", func() {
 
 		BeforeEach(func() {
 			readFromTop = mem.ReadReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x10040).
 				WithByteSize(4).
 				Build()
 			readToBottom = mem.ReadReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x20040).
 				WithByteSize(4).
 				Build()
 			writeFromTop = mem.WriteReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x10040).
 				Build()
 			writeToBottom = mem.WriteReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x10040).
 				Build()
 
@@ -298,25 +295,26 @@ var _ = Describe("Address Translator", func() {
 		})
 
 		It("should do nothing if there is no response to process", func() {
-			bottomPort.EXPECT().PeekIncoming().Return(nil)
-			madeProgress := tMiddleware.respond()
+			bottomPort.EXPECT().Peek().Return(nil)
+			madeProgress := t.respond(10)
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should respond data ready", func() {
 			dataReady := mem.DataReadyRspBuilder{}.
+				WithSendTime(10).
 				WithRspTo(readToBottom.ID).
 				Build()
-			bottomPort.EXPECT().PeekIncoming().Return(dataReady)
+			bottomPort.EXPECT().Peek().Return(dataReady)
 			topPort.EXPECT().Send(gomock.Any()).
 				Do(func(dr *mem.DataReadyRsp) {
 					Expect(dr.RespondTo).To(Equal(readFromTop.ID))
 					Expect(dr.Data).To(Equal(dataReady.Data))
 				}).
 				Return(nil)
-			bottomPort.EXPECT().RetrieveIncoming()
+			bottomPort.EXPECT().Retrieve(gomock.Any())
 
-			madeProgress := tMiddleware.respond()
+			madeProgress := t.respond(10)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(t.inflightReqToBottom).To(HaveLen(1))
@@ -324,17 +322,18 @@ var _ = Describe("Address Translator", func() {
 
 		It("should respond write done", func() {
 			done := mem.WriteDoneRspBuilder{}.
+				WithSendTime(10).
 				WithRspTo(writeToBottom.ID).
 				Build()
-			bottomPort.EXPECT().PeekIncoming().Return(done)
+			bottomPort.EXPECT().Peek().Return(done)
 			topPort.EXPECT().Send(gomock.Any()).
 				Do(func(done *mem.WriteDoneRsp) {
 					Expect(done.RespondTo).To(Equal(writeFromTop.ID))
 				}).
 				Return(nil)
-			bottomPort.EXPECT().RetrieveIncoming()
+			bottomPort.EXPECT().Retrieve(gomock.Any())
 
-			madeProgress := tMiddleware.respond()
+			madeProgress := t.respond(10)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(t.inflightReqToBottom).To(HaveLen(1))
@@ -342,9 +341,10 @@ var _ = Describe("Address Translator", func() {
 
 		It("should stall if TopPort is busy", func() {
 			dataReady := mem.DataReadyRspBuilder{}.
+				WithSendTime(10).
 				WithRspTo(readToBottom.ID).
 				Build()
-			bottomPort.EXPECT().PeekIncoming().Return(dataReady)
+			bottomPort.EXPECT().Peek().Return(dataReady)
 			topPort.EXPECT().Send(gomock.Any()).
 				Do(func(dr *mem.DataReadyRsp) {
 					Expect(dr.RespondTo).To(Equal(readFromTop.ID))
@@ -352,7 +352,7 @@ var _ = Describe("Address Translator", func() {
 				}).
 				Return(&sim.SendError{})
 
-			madeProgress := tMiddleware.respond()
+			madeProgress := t.respond(10)
 
 			Expect(madeProgress).To(BeFalse())
 			Expect(t.inflightReqToBottom).To(HaveLen(2))
@@ -371,25 +371,31 @@ var _ = Describe("Address Translator", func() {
 
 		BeforeEach(func() {
 			readFromTop = mem.ReadReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x10040).
 				WithByteSize(4).
 				Build()
 			readToBottom = mem.ReadReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x20040).
 				WithByteSize(4).
 				Build()
 			writeFromTop = mem.WriteReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x10040).
 				Build()
 			writeToBottom = mem.WriteReqBuilder{}.
+				WithSendTime(8).
 				WithAddress(0x10040).
 				Build()
 			flushReq = mem.ControlMsgBuilder{}.
-				WithDst(t.ctrlPort.AsRemote()).
+				WithSendTime(8).
+				WithDst(t.ctrlPort).
 				ToDiscardTransactions().
 				Build()
 			restartReq = mem.ControlMsgBuilder{}.
-				WithDst(t.ctrlPort.AsRemote()).
+				WithSendTime(8).
+				WithDst(t.ctrlPort).
 				ToRestart().
 				Build()
 
@@ -400,11 +406,11 @@ var _ = Describe("Address Translator", func() {
 		})
 
 		It("should handle flush req", func() {
-			ctrlPort.EXPECT().PeekIncoming().Return(flushReq)
-			ctrlPort.EXPECT().RetrieveIncoming().Return(flushReq)
+			ctrlPort.EXPECT().Peek().Return(flushReq)
+			ctrlPort.EXPECT().Retrieve(sim.VTimeInSec(8)).Return(flushReq)
 			ctrlPort.EXPECT().Send(gomock.Any()).Return(nil)
 
-			madeProgress := tMiddleware.handleCtrlRequest()
+			madeProgress := t.handleCtrlRequest(8)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(t.isFlushing).To(BeTrue())
@@ -412,14 +418,14 @@ var _ = Describe("Address Translator", func() {
 		})
 
 		It("should handle restart req", func() {
-			ctrlPort.EXPECT().PeekIncoming().Return(restartReq)
-			ctrlPort.EXPECT().RetrieveIncoming().Return(restartReq)
+			ctrlPort.EXPECT().Peek().Return(restartReq)
+			ctrlPort.EXPECT().Retrieve(sim.VTimeInSec(8)).Return(restartReq)
 			ctrlPort.EXPECT().Send(gomock.Any()).Return(nil)
-			topPort.EXPECT().RetrieveIncoming().Return(nil)
-			bottomPort.EXPECT().RetrieveIncoming().Return(nil)
-			translationPort.EXPECT().RetrieveIncoming().Return(nil)
+			topPort.EXPECT().Retrieve(gomock.Any()).Return(nil)
+			bottomPort.EXPECT().Retrieve(gomock.Any()).Return(nil)
+			translationPort.EXPECT().Retrieve(gomock.Any()).Return(nil)
 
-			madeProgress := tMiddleware.handleCtrlRequest()
+			madeProgress := t.handleCtrlRequest(8)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(t.isFlushing).To(BeFalse())

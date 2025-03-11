@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // NamedHookable represent something both have a name and can be hooked
@@ -206,4 +206,11 @@ func TraceReqFinalize(
 	domain NamedHookable,
 ) {
 	EndTask(msg.Meta().ID+"_req_out", domain)
+}
+
+func TraceEvictEnd(
+	msg sim.Msg,
+	domain NamedHookable,
+) {
+	EndTask(MsgIDAtReceiver(msg, domain), domain)
 }

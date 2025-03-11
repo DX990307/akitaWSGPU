@@ -4,13 +4,13 @@ import (
 	"log"
 	"reflect"
 
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 type coalescer struct {
-	cache      *Comp
+	cache      *Cache
 	toCoalesce []*transaction
 }
 
@@ -18,16 +18,17 @@ func (c *coalescer) Reset() {
 	c.toCoalesce = nil
 }
 
-func (c *coalescer) Tick() bool {
-	req := c.cache.topPort.PeekIncoming()
+func (c *coalescer) Tick(now sim.VTimeInSec) bool {
+	req := c.cache.topPort.Peek()
 	if req == nil {
 		return false
 	}
 
-	return c.processReq(req.(mem.AccessReq))
+	return c.processReq(now, req.(mem.AccessReq))
 }
 
 func (c *coalescer) processReq(
+	now sim.VTimeInSec,
 	req mem.AccessReq,
 ) bool {
 	if len(c.cache.transactions) >= c.cache.maxNumConcurrentTrans {
@@ -36,106 +37,101 @@ func (c *coalescer) processReq(
 
 	if c.isReqLastInWave(req) {
 		if len(c.toCoalesce) == 0 || c.canReqCoalesce(req) {
-			return c.processReqLastInWaveCoalescable(req)
+			return c.processReqLastInWaveCoalescable(now, req)
 		}
-
-		return c.processReqLastInWaveNoncoalescable(req)
+		return c.processReqLastInWaveNoncoalescable(now, req)
 	}
 
 	if len(c.toCoalesce) == 0 || c.canReqCoalesce(req) {
-		return c.processReqCoalescable(req)
+		return c.processReqCoalescable(now, req)
 	}
-
-	return c.processReqNoncoalescable(req)
+	return c.processReqNoncoalescable(now, req)
 }
 
 func (c *coalescer) processReqCoalescable(
+	now sim.VTimeInSec,
 	req mem.AccessReq,
 ) bool {
-	trans := c.createTransaction(req)
+	trans := c.createTransaction(req, now)
 	c.toCoalesce = append(c.toCoalesce, trans)
 	c.cache.transactions = append(c.cache.transactions, trans)
-	c.cache.topPort.RetrieveIncoming()
+	c.cache.topPort.Retrieve(now)
 
 	tracing.TraceReqReceive(req, c.cache)
-
 	return true
 }
 
 func (c *coalescer) processReqNoncoalescable(
+	now sim.VTimeInSec,
 	req mem.AccessReq,
 ) bool {
 	if !c.cache.dirBuf.CanPush() {
 		return false
 	}
 
-	c.coalesceAndSend()
+	c.coalesceAndSend(now)
 
-	trans := c.createTransaction(req)
+	trans := c.createTransaction(req, now)
 	c.toCoalesce = append(c.toCoalesce, trans)
 	c.cache.transactions = append(c.cache.transactions, trans)
-	c.cache.topPort.RetrieveIncoming()
+	c.cache.topPort.Retrieve(now)
 
 	tracing.TraceReqReceive(req, c.cache)
-
 	return true
 }
 
 func (c *coalescer) processReqLastInWaveCoalescable(
+	now sim.VTimeInSec,
 	req mem.AccessReq,
 ) bool {
 	if !c.cache.dirBuf.CanPush() {
 		return false
 	}
 
-	trans := c.createTransaction(req)
+	trans := c.createTransaction(req, now)
 	c.toCoalesce = append(c.toCoalesce, trans)
 	c.cache.transactions = append(c.cache.transactions, trans)
-	c.coalesceAndSend()
-	c.cache.topPort.RetrieveIncoming()
+	c.coalesceAndSend(now)
+	c.cache.topPort.Retrieve(now)
 
 	tracing.TraceReqReceive(req, c.cache)
-
 	return true
 }
 
 func (c *coalescer) processReqLastInWaveNoncoalescable(
+	now sim.VTimeInSec,
 	req mem.AccessReq,
 ) bool {
 	if !c.cache.dirBuf.CanPush() {
 		return false
 	}
-
-	c.coalesceAndSend()
+	c.coalesceAndSend(now)
 
 	if !c.cache.dirBuf.CanPush() {
 		return true
 	}
 
-	trans := c.createTransaction(req)
+	trans := c.createTransaction(req, now)
 	c.toCoalesce = append(c.toCoalesce, trans)
 	c.cache.transactions = append(c.cache.transactions, trans)
-	c.coalesceAndSend()
-	c.cache.topPort.RetrieveIncoming()
+	c.coalesceAndSend(now)
+	c.cache.topPort.Retrieve(now)
 
 	tracing.TraceReqReceive(req, c.cache)
-
 	return true
 }
 
-func (c *coalescer) createTransaction(req mem.AccessReq) *transaction {
+func (c *coalescer) createTransaction(req mem.AccessReq, now sim.VTimeInSec) *transaction {
 	switch req := req.(type) {
 	case *mem.ReadReq:
 		t := &transaction{
 			read: req,
 		}
-
 		return t
 	case *mem.WriteReq:
 		t := &transaction{
 			write: req,
 		}
-
 		return t
 	default:
 		log.Panicf("cannot process request of type %s\n", reflect.TypeOf(req))
@@ -159,7 +155,7 @@ func (c *coalescer) canReqCoalesce(req mem.AccessReq) bool {
 	return req.GetAddress()/blockSize == c.toCoalesce[0].Address()/blockSize
 }
 
-func (c *coalescer) coalesceAndSend() bool {
+func (c *coalescer) coalesceAndSend(now sim.VTimeInSec) bool {
 	var trans *transaction
 	if c.toCoalesce[0].read != nil {
 		trans = c.coalesceRead()
@@ -176,7 +172,6 @@ func (c *coalescer) coalesceAndSend() bool {
 			c.cache.Name()+".Local",
 			nil)
 	}
-
 	c.cache.dirBuf.Push(trans)
 	c.cache.postCoalesceTransactions =
 		append(c.cache.postCoalesceTransactions, trans)
@@ -193,7 +188,6 @@ func (c *coalescer) coalesceRead() *transaction {
 		WithByteSize(blockSize).
 		WithPID(c.toCoalesce[0].PID()).
 		Build()
-
 	return &transaction{
 		id:                      sim.GetIDGenerator().Generate(),
 		read:                    coalescedRead,
@@ -214,7 +208,6 @@ func (c *coalescer) coalesceWrite() *transaction {
 	for _, t := range c.toCoalesce {
 		w := t.write
 		offset := int(w.Address - cachelineID)
-
 		for i := 0; i < len(w.Data); i++ {
 			if w.DirtyMask == nil || w.DirtyMask[i] {
 				write.Data[i+offset] = w.Data[i]
@@ -222,7 +215,6 @@ func (c *coalescer) coalesceWrite() *transaction {
 			}
 		}
 	}
-
 	return &transaction{
 		id:                      sim.GetIDGenerator().Generate(),
 		write:                   write,

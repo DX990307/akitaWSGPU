@@ -109,9 +109,7 @@ var _ = Describe("SerialEngine", func() {
 				time := VTimeInSec(float64(rand.Uint64()%10) * 0.01)
 				evt.EXPECT().Time().Return(time).AnyTimes()
 				evt.EXPECT().Handler().Return(handler).AnyTimes()
-				evt.EXPECT().IsSecondary().
-					Return(rand.Uint32()%2 == 0).
-					AnyTimes()
+				evt.EXPECT().IsSecondary().Return(rand.Uint32()%2 == 0).AnyTimes()
 				engine.Schedule(evt)
 			}
 		})

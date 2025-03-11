@@ -22,6 +22,7 @@ const (
 // The storage implementation manages the storage in units. The unit can is
 // similar to the concept of page in memory management. For the units that
 // it not touched by Read and Write function, no memory will be allocated.
+//
 type Storage struct {
 	sync.Mutex
 	Capacity uint64
@@ -37,7 +38,6 @@ type storageUnit struct {
 func newStorageUnit(uintSize uint64) *storageUnit {
 	u := new(storageUnit)
 	u.data = make([]byte, uintSize)
-
 	return u
 }
 
@@ -69,28 +69,23 @@ func NewStorageWithUnitSize(capacity uint64, unitSize uint64) *Storage {
 // before. Otherwise it initializes a storage unit in the storage object
 func (s *Storage) createOrGetStorageUnit(address uint64) (*storageUnit, error) {
 	if address > s.Capacity {
-		return nil, errors.New(
-			"accessing physical address beyond the storage capacity")
+		return nil, errors.New("accessing physical address beyond the storage capacity")
 	}
 
 	baseAddr, _ := s.parseAddress(address)
-
 	s.Lock()
-	defer s.Unlock()
-
 	unit, ok := s.data[baseAddr]
 	if !ok {
 		unit = newStorageUnit(s.unitSize)
 		s.data[baseAddr] = unit
 	}
-
+	s.Unlock()
 	return unit, nil
 }
 
 func (s *Storage) parseAddress(addr uint64) (baseAddr, inUnitAddr uint64) {
 	inUnitAddr = addr % s.unitSize
 	baseAddr = addr - inUnitAddr
-
 	return
 }
 
@@ -108,7 +103,6 @@ func (s *Storage) Read(address uint64, len uint64) ([]byte, error) {
 
 		baseAddr, inUnitAddr := s.parseAddress(currAddr)
 		lenLeftInUnit := baseAddr + s.unitSize - currAddr
-
 		var lenToRead uint64
 		if lenLeft < lenLeftInUnit {
 			lenToRead = lenLeft

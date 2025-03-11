@@ -1,10 +1,9 @@
 package writeback
 
 import (
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 type cacheState int
@@ -17,10 +16,9 @@ const (
 	cacheStatePaused
 )
 
-// Comp in the writeback package is a cache that performs the write-back policy.
-type Comp struct {
+// A Cache in the writeback package is a cache that performs the write-back policy.
+type Cache struct {
 	*sim.TickingComponent
-	sim.MiddlewareHolder
 
 	topPort     sim.Port
 	bottomPort  sim.Port
@@ -32,6 +30,10 @@ type Comp struct {
 	mshrStageBuffer          sim.Buffer
 	writeBufferBuffer        sim.Buffer
 
+	topSender         sim.BufferedSender
+	bottomSender      sim.BufferedSender
+	controlPortSender sim.BufferedSender
+
 	topParser   *topParser
 	writeBuffer *writeBufferStage
 	dirStage    *directoryStage
@@ -39,70 +41,65 @@ type Comp struct {
 	mshrStage   *mshrStage
 	flusher     *flusher
 
-	storage             *mem.Storage
-	addressToPortMapper mem.AddressToPortMapper
-	directory           cache.Directory
-	mshr                cache.MSHR
-	log2BlockSize       uint64
-	numReqPerCycle      int
+	storage         *mem.Storage
+	lowModuleFinder mem.LowModuleFinder
+	directory       cache.Directory
+	mshr            cache.MSHR
+	log2BlockSize   uint64
+	numReqPerCycle  int
 
 	state                cacheState
 	inFlightTransactions []*transaction
 	evictingList         map[uint64]bool
 }
 
-// SetAddressToPortMapper sets the AddressToPortMapper used by the cache.
-func (c *Comp) SetAddressToPortMapper(lmf mem.AddressToPortMapper) {
-	c.addressToPortMapper = lmf
-}
-
-func (c *Comp) Tick() bool {
-	return c.MiddlewareHolder.Tick()
-}
-
-type middleware struct {
-	*Comp
+// SetLowModuleFinder sets the LowModuleFinder used by the cache.
+func (c *Cache) SetLowModuleFinder(lmf mem.LowModuleFinder) {
+	c.lowModuleFinder = lmf
 }
 
 // Tick updates the internal states of the Cache.
-func (m *middleware) Tick() bool {
+func (c *Cache) Tick(now sim.VTimeInSec) bool {
 	madeProgress := false
 
-	if m.state != cacheStatePaused {
-		madeProgress = m.runPipeline() || madeProgress
+	madeProgress = c.controlPortSender.Tick(now) || madeProgress
+
+	if c.state != cacheStatePaused {
+		madeProgress = c.runPipeline(now) || madeProgress
 	}
 
-	madeProgress = m.flusher.Tick() || madeProgress
+	madeProgress = c.flusher.Tick(now) || madeProgress
 
 	return madeProgress
 }
 
-func (m *middleware) runPipeline() bool {
+func (c *Cache) runPipeline(now sim.VTimeInSec) bool {
 	madeProgress := false
 
-	madeProgress = m.runStage(m.mshrStage) || madeProgress
+	madeProgress = c.runStage(now, c.topSender) || madeProgress
+	madeProgress = c.runStage(now, c.bottomSender) || madeProgress
+	madeProgress = c.runStage(now, c.mshrStage) || madeProgress
 
-	for _, bs := range m.bankStages {
-		madeProgress = bs.Tick() || madeProgress
+	for _, bs := range c.bankStages {
+		madeProgress = bs.Tick(now) || madeProgress
 	}
 
-	madeProgress = m.runStage(m.writeBuffer) || madeProgress
-	madeProgress = m.runStage(m.dirStage) || madeProgress
-	madeProgress = m.runStage(m.topParser) || madeProgress
+	madeProgress = c.runStage(now, c.writeBuffer) || madeProgress
+	madeProgress = c.runStage(now, c.dirStage) || madeProgress
+	madeProgress = c.runStage(now, c.topParser) || madeProgress
 
 	return madeProgress
 }
 
-func (m *middleware) runStage(stage sim.Ticker) bool {
+func (c *Cache) runStage(now sim.VTimeInSec, stage sim.Ticker) bool {
 	madeProgress := false
-	for i := 0; i < m.numReqPerCycle; i++ {
-		madeProgress = stage.Tick() || madeProgress
+	for i := 0; i < c.numReqPerCycle; i++ {
+		madeProgress = stage.Tick(now) || madeProgress
 	}
-
 	return madeProgress
 }
 
-func (c *Comp) discardInflightTransactions() {
+func (c *Cache) discardInflightTransactions(now sim.VTimeInSec) {
 	sets := c.directory.GetSets()
 	for _, set := range sets {
 		for _, block := range set.Blocks {
@@ -111,16 +108,16 @@ func (c *Comp) discardInflightTransactions() {
 		}
 	}
 
-	c.dirStage.Reset()
-
+	c.dirStage.Reset(now)
 	for _, bs := range c.bankStages {
-		bs.Reset()
+		bs.Reset(now)
 	}
+	c.mshrStage.Reset(now)
+	c.writeBuffer.Reset(now)
 
-	c.mshrStage.Reset()
-	c.writeBuffer.Reset()
+	clearPort(c.topPort, now)
 
-	clearPort(c.topPort)
+	c.topSender.Clear()
 
 	// for _, t := range c.inFlightTransactions {
 	// 	fmt.Printf("%.10f, %s, transaction %s discarded due to flushing\n",

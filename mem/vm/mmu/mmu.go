@@ -1,12 +1,13 @@
 package mmu
 
 import (
+	"fmt"
 	"log"
 	"reflect"
 
-	"github.com/sarchlab/akita/v4/mem/vm"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/vm"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 type transaction struct {
@@ -16,15 +17,16 @@ type transaction struct {
 	migration *vm.PageMigrationReqToDriver
 }
 
-// Comp is the default mmu implementation. It is also an akita Component.
-type Comp struct {
+// MMU is the default mmu implementation. It is also an akita Component.
+type MMU struct {
 	sim.TickingComponent
-	sim.MiddlewareHolder
 
 	topPort       sim.Port
 	migrationPort sim.Port
 
-	MigrationServiceProvider sim.RemotePort
+	MigrationServiceProvider sim.Port
+
+	topSender sim.BufferedSender
 
 	pageTable           vm.PageTable
 	latency             int
@@ -40,94 +42,87 @@ type Comp struct {
 	PageAccessedByDeviceID map[uint64][]uint64
 }
 
-func (c *Comp) Tick() bool {
-	return c.MiddlewareHolder.Tick()
-}
-
-type middleware struct {
-	*Comp
-}
-
 // Tick defines how the MMU update state each cycle
-func (m *middleware) Tick() bool {
+func (mmu *MMU) Tick(now sim.VTimeInSec) bool {
 	madeProgress := false
 
-	madeProgress = m.sendMigrationToDriver() || madeProgress
-	madeProgress = m.walkPageTable() || madeProgress
-	madeProgress = m.processMigrationReturn() || madeProgress
-	madeProgress = m.parseFromTop() || madeProgress
+	madeProgress = mmu.topSender.Tick(now) || madeProgress
+	madeProgress = mmu.sendMigrationToDriver(now) || madeProgress
+	madeProgress = mmu.walkPageTable(now) || madeProgress
+	madeProgress = mmu.processMigrationReturn(now) || madeProgress
+	madeProgress = mmu.parseFromTop(now) || madeProgress
 
 	return madeProgress
 }
 
-func (m *middleware) walkPageTable() bool {
+func (mmu *MMU) walkPageTable(now sim.VTimeInSec) bool {
 	madeProgress := false
-
-	for i := 0; i < len(m.walkingTranslations); i++ {
-		if m.walkingTranslations[i].cycleLeft > 0 {
-			m.walkingTranslations[i].cycleLeft--
+	for i := 0; i < len(mmu.walkingTranslations); i++ {
+		if mmu.walkingTranslations[i].cycleLeft > 0 {
+			mmu.walkingTranslations[i].cycleLeft--
 			madeProgress = true
-
 			continue
 		}
 
-		madeProgress = m.finalizePageWalk(i) || madeProgress
+		madeProgress = mmu.finalizePageWalk(now, i) || madeProgress
 	}
 
-	tmp := m.walkingTranslations[:0]
-
-	for i := 0; i < len(m.walkingTranslations); i++ {
-		if !m.toRemove(i) {
-			tmp = append(tmp, m.walkingTranslations[i])
+	tmp := mmu.walkingTranslations[:0]
+	for i := 0; i < len(mmu.walkingTranslations); i++ {
+		if !mmu.toRemove(i) {
+			tmp = append(tmp, mmu.walkingTranslations[i])
 		}
 	}
-
-	m.walkingTranslations = tmp
-	m.toRemoveFromPTW = nil
+	mmu.walkingTranslations = tmp
+	mmu.toRemoveFromPTW = nil
 
 	return madeProgress
 }
 
-func (m *middleware) finalizePageWalk(
+func (mmu *MMU) finalizePageWalk(
+	now sim.VTimeInSec,
 	walkingIndex int,
 ) bool {
-	req := m.walkingTranslations[walkingIndex].req
-	page, found := m.pageTable.Find(req.PID, req.VAddr)
+	req := mmu.walkingTranslations[walkingIndex].req
+	page, found := mmu.pageTable.Find(req.PID, req.VAddr)
+
+	// fmt.Printf("%0.9f,%s,GetReq,%s\n",
+	// 	float64(now), mmu.topPort.Name(), req.TaskID)
 
 	if !found {
 		panic("page not found")
 	}
 
-	m.walkingTranslations[walkingIndex].page = page
+	mmu.walkingTranslations[walkingIndex].page = page
 
 	if page.IsMigrating {
-		return m.addTransactionToMigrationQueue(walkingIndex)
+		return mmu.addTransactionToMigrationQueue(walkingIndex)
 	}
 
-	if m.pageNeedMigrate(m.walkingTranslations[walkingIndex]) {
-		return m.addTransactionToMigrationQueue(walkingIndex)
+	if mmu.pageNeedMigrate(mmu.walkingTranslations[walkingIndex]) {
+		return mmu.addTransactionToMigrationQueue(walkingIndex)
 	}
 
-	return m.doPageWalkHit(walkingIndex)
+	return mmu.doPageWalkHit(now, walkingIndex)
 }
 
-func (m *middleware) addTransactionToMigrationQueue(walkingIndex int) bool {
-	if len(m.migrationQueue) >= m.migrationQueueSize {
+func (mmu *MMU) addTransactionToMigrationQueue(walkingIndex int) bool {
+	if len(mmu.migrationQueue) >= mmu.migrationQueueSize {
 		return false
 	}
 
-	m.toRemoveFromPTW = append(m.toRemoveFromPTW, walkingIndex)
-	m.migrationQueue = append(m.migrationQueue,
-		m.walkingTranslations[walkingIndex])
+	mmu.toRemoveFromPTW = append(mmu.toRemoveFromPTW, walkingIndex)
+	mmu.migrationQueue = append(mmu.migrationQueue,
+		mmu.walkingTranslations[walkingIndex])
 
-	page := m.walkingTranslations[walkingIndex].page
+	page := mmu.walkingTranslations[walkingIndex].page
 	page.IsMigrating = true
-	m.pageTable.Update(page)
+	mmu.pageTable.Update(page)
 
 	return true
 }
 
-func (m *middleware) pageNeedMigrate(walking transaction) bool {
+func (mmu *MMU) pageNeedMigrate(walking transaction) bool {
 	if walking.req.DeviceID == walking.page.DeviceID {
 		return false
 	}
@@ -143,83 +138,101 @@ func (m *middleware) pageNeedMigrate(walking transaction) bool {
 	return true
 }
 
-func (m *middleware) doPageWalkHit(
+func (mmu *MMU) doPageWalkHit(
+	now sim.VTimeInSec,
 	walkingIndex int,
 ) bool {
-	if !m.topPort.CanSend() {
+	if !mmu.topSender.CanSend(1) {
 		return false
 	}
+	walking := mmu.walkingTranslations[walkingIndex]
 
-	walking := m.walkingTranslations[walkingIndex]
 	rsp := vm.TranslationRspBuilder{}.
-		WithSrc(m.topPort.AsRemote()).
+		WithSendTime(now).
+		WithSrc(mmu.topPort).
 		WithDst(walking.req.Src).
 		WithRspTo(walking.req.ID).
 		WithPage(walking.page).
+		WithTaskID(walking.req.TaskID).
 		Build()
 
-	m.topPort.Send(rsp)
-	m.toRemoveFromPTW = append(m.toRemoveFromPTW, walkingIndex)
+	mmu.topSender.Send(rsp)
 
-	tracing.TraceReqComplete(walking.req, m.Comp)
+	// fmt.Printf("%0.9f,%s,SendRsp,%s\n",
+	// 	float64(now), mmu.topPort.Name(), rsp.TaskID)
+
+	mmu.toRemoveFromPTW = append(mmu.toRemoveFromPTW, walkingIndex)
+
+	tracing.TraceReqComplete(walking.req, mmu)
 
 	return true
 }
 
-func (m *middleware) sendMigrationToDriver() (madeProgress bool) {
-	if len(m.migrationQueue) == 0 {
+func (mmu *MMU) sendMigrationToDriver(
+	now sim.VTimeInSec,
+) (madeProgress bool) {
+	if len(mmu.migrationQueue) == 0 {
 		return false
 	}
 
-	trans := m.migrationQueue[0]
+	trans := mmu.migrationQueue[0]
 	req := trans.req
-	page, found := m.pageTable.Find(req.PID, req.VAddr)
-
+	page, found := mmu.pageTable.Find(req.PID, req.VAddr)
 	if !found {
 		panic("page not found")
 	}
-
 	trans.page = page
 
 	if req.DeviceID == page.DeviceID || page.IsPinned {
-		if !m.topPort.CanSend() {
-			return false
-		}
-
-		m.sendTranslationRsp(trans)
-		m.migrationQueue = m.migrationQueue[1:]
-		m.markPageAsNotMigratingIfNotInTheMigrationQueue(page)
+		mmu.sendTranlationRsp(now, trans)
+		mmu.migrationQueue = mmu.migrationQueue[1:]
+		mmu.markPageAsNotMigratingIfNotInTheMigrationQueue(page)
 
 		return true
 	}
 
-	if m.isDoingMigration {
+	if mmu.isDoingMigration {
 		return false
 	}
 
-	migrationReq := m.createMigrationRequest(trans, page)
+	migrationInfo := new(vm.PageMigrationInfo)
+	migrationInfo.GPUReqToVAddrMap = make(map[uint64][]uint64)
+	migrationInfo.GPUReqToVAddrMap[trans.req.DeviceID] =
+		append(migrationInfo.GPUReqToVAddrMap[trans.req.DeviceID],
+			trans.req.VAddr)
 
-	err := m.migrationPort.Send(migrationReq)
+	mmu.PageAccessedByDeviceID[page.VAddr] =
+		append(mmu.PageAccessedByDeviceID[page.VAddr], page.DeviceID)
+
+	migrationReq := vm.NewPageMigrationReqToDriver(
+		now, mmu.migrationPort, mmu.MigrationServiceProvider)
+	migrationReq.PID = page.PID
+	migrationReq.PageSize = page.PageSize
+	migrationReq.CurrPageHostGPU = page.DeviceID
+	migrationReq.MigrationInfo = migrationInfo
+	migrationReq.CurrAccessingGPUs = unique(mmu.PageAccessedByDeviceID[page.VAddr])
+	migrationReq.RespondToTop = true
+
+	err := mmu.migrationPort.Send(migrationReq)
 	if err != nil {
 		return false
 	}
 
 	trans.page.IsMigrating = true
-	m.pageTable.Update(trans.page)
+	mmu.pageTable.Update(trans.page)
 	trans.migration = migrationReq
-	m.isDoingMigration = true
-	m.currentOnDemandMigration = trans
-	m.migrationQueue = m.migrationQueue[1:]
+	mmu.isDoingMigration = true
+	mmu.currentOnDemandMigration = trans
+	mmu.migrationQueue = mmu.migrationQueue[1:]
 
 	return true
 }
 
-func (m *middleware) markPageAsNotMigratingIfNotInTheMigrationQueue(
+func (mmu *MMU) markPageAsNotMigratingIfNotInTheMigrationQueue(
 	page vm.Page,
 ) vm.Page {
 	inQueue := false
-
-	for _, t := range m.migrationQueue {
+	for _, t := range mmu.migrationQueue {
 		if page.PAddr == t.page.PAddr {
 			inQueue = true
 			break
@@ -228,146 +241,124 @@ func (m *middleware) markPageAsNotMigratingIfNotInTheMigrationQueue(
 
 	if !inQueue {
 		page.IsMigrating = false
-		m.pageTable.Update(page)
-
+		mmu.pageTable.Update(page)
 		return page
 	}
 
 	return page
 }
 
-func (m *middleware) sendTranslationRsp(
+func (mmu *MMU) sendTranlationRsp(
+	now sim.VTimeInSec,
 	trans transaction,
 ) (madeProgress bool) {
 	req := trans.req
 	page := trans.page
 
 	rsp := vm.TranslationRspBuilder{}.
-		WithSrc(m.topPort.AsRemote()).
+		WithSendTime(now).
+		WithSrc(mmu.topPort).
 		WithDst(req.Src).
 		WithRspTo(req.ID).
 		WithPage(page).
 		Build()
-	m.topPort.Send(rsp)
+	mmu.topSender.Send(rsp)
 
 	return true
 }
 
-func (m *middleware) processMigrationReturn() bool {
-	item := m.migrationPort.PeekIncoming()
+func (mmu *MMU) processMigrationReturn(now sim.VTimeInSec) bool {
+	item := mmu.migrationPort.Peek()
 	if item == nil {
 		return false
 	}
 
-	if !m.topPort.CanSend() {
+	if !mmu.topSender.CanSend(1) {
 		return false
 	}
 
-	req := m.currentOnDemandMigration.req
-	page, found := m.pageTable.Find(req.PID, req.VAddr)
-
+	req := mmu.currentOnDemandMigration.req
+	page, found := mmu.pageTable.Find(req.PID, req.VAddr)
 	if !found {
 		panic("page not found")
 	}
 
 	rsp := vm.TranslationRspBuilder{}.
-		WithSrc(m.topPort.AsRemote()).
+		WithSendTime(now).
+		WithSrc(mmu.topPort).
 		WithDst(req.Src).
 		WithRspTo(req.ID).
 		WithPage(page).
 		Build()
-	m.topPort.Send(rsp)
+	mmu.topSender.Send(rsp)
 
-	m.isDoingMigration = false
+	mmu.isDoingMigration = false
 
-	page = m.markPageAsNotMigratingIfNotInTheMigrationQueue(page)
+	page = mmu.markPageAsNotMigratingIfNotInTheMigrationQueue(page)
 	page.IsPinned = true
-	m.pageTable.Update(page)
+	mmu.pageTable.Update(page)
 
-	m.migrationPort.RetrieveIncoming()
-
-	return true
-}
-
-func (m *middleware) parseFromTop() bool {
-	if len(m.walkingTranslations) >= m.maxRequestsInFlight {
-		return false
-	}
-
-	req := m.topPort.RetrieveIncoming()
-	if req == nil {
-		return false
-	}
-
-	tracing.TraceReqReceive(req, m.Comp)
-
-	switch req := req.(type) {
-	case *vm.TranslationReq:
-		m.startWalking(req)
-	default:
-		log.Panicf("MMU canot handle request of type %s", reflect.TypeOf(req))
-	}
+	mmu.migrationPort.Retrieve(now)
 
 	return true
 }
 
-func (m *middleware) startWalking(req *vm.TranslationReq) {
+func (mmu *MMU) parseFromTop(now sim.VTimeInSec) bool {
+	madeProgress := false
+
+	if mmu.topPort.Peek() == nil {
+		return false
+	}
+
+	for len(mmu.walkingTranslations) < mmu.maxRequestsInFlight {
+		req := mmu.topPort.Retrieve(now)
+		if req == nil {
+			break
+		}
+
+		tracing.TraceReqReceive(req, mmu)
+
+		switch req := req.(type) {
+		case *vm.TranslationReq:
+			fmt.Printf("%d\n", req.VAddr)
+			mmu.startWalking(req)
+		default:
+			log.Panicf("MMU canot handle request of type %s", reflect.TypeOf(req))
+		}
+
+		madeProgress = true
+	}
+
+	return madeProgress
+}
+
+func (mmu *MMU) startWalking(req *vm.TranslationReq) {
 	translationInPipeline := transaction{
 		req:       req,
-		cycleLeft: m.latency,
+		cycleLeft: mmu.latency,
 	}
 
-	m.walkingTranslations = append(m.walkingTranslations, translationInPipeline)
+	mmu.walkingTranslations = append(mmu.walkingTranslations, translationInPipeline)
 }
 
-func (m *middleware) toRemove(index int) bool {
-	for i := 0; i < len(m.toRemoveFromPTW); i++ {
-		remove := m.toRemoveFromPTW[i]
+func (mmu *MMU) toRemove(index int) bool {
+	for i := 0; i < len(mmu.toRemoveFromPTW); i++ {
+		remove := mmu.toRemoveFromPTW[i]
 		if remove == index {
 			return true
 		}
 	}
-
 	return false
 }
 
 func unique(intSlice []uint64) []uint64 {
 	keys := make(map[int]bool)
 	list := []uint64{}
-
 	for _, entry := range intSlice {
 		if _, value := keys[int(entry)]; !value {
 			keys[int(entry)] = true
-
 			list = append(list, entry)
 		}
 	}
-
 	return list
-}
-
-func (m *middleware) createMigrationRequest(
-	trans transaction,
-	page vm.Page,
-) *vm.PageMigrationReqToDriver {
-	migrationInfo := new(vm.PageMigrationInfo)
-	migrationInfo.GPUReqToVAddrMap = make(map[uint64][]uint64)
-	migrationInfo.GPUReqToVAddrMap[trans.req.DeviceID] =
-		append(migrationInfo.GPUReqToVAddrMap[trans.req.DeviceID],
-			trans.req.VAddr)
-
-	m.PageAccessedByDeviceID[page.VAddr] =
-		append(m.PageAccessedByDeviceID[page.VAddr], page.DeviceID)
-
-	migrationReq := vm.NewPageMigrationReqToDriver(
-		m.migrationPort.AsRemote(), m.MigrationServiceProvider)
-	migrationReq.PID = page.PID
-	migrationReq.PageSize = page.PageSize
-	migrationReq.CurrPageHostGPU = page.DeviceID
-	migrationReq.MigrationInfo = migrationInfo
-	migrationReq.CurrAccessingGPUs = unique(
-		m.PageAccessedByDeviceID[page.VAddr])
-	migrationReq.RespondToTop = true
-
-	return migrationReq
 }

@@ -11,19 +11,18 @@ type TickEvent struct {
 }
 
 // MakeTickEvent creates a new TickEvent
-func MakeTickEvent(handler Handler, time VTimeInSec) TickEvent {
+func MakeTickEvent(t VTimeInSec, handler Handler) TickEvent {
 	evt := TickEvent{}
 	evt.ID = GetIDGenerator().Generate()
 	evt.handler = handler
-	evt.time = time
+	evt.time = t
 	evt.secondary = false
-
 	return evt
 }
 
 // A Ticker is an object that updates states with ticks.
 type Ticker interface {
-	Tick() bool
+	Tick(now VTimeInSec) bool
 }
 
 // TickScheduler can help schedule tick events.
@@ -48,8 +47,8 @@ func NewTickScheduler(
 	ticker.handler = handler
 	ticker.Engine = engine
 	ticker.Freq = freq
-	ticker.nextTickTime = -1 // This will make sure the first tick is scheduled
 
+	ticker.nextTickTime = -1
 	return ticker
 }
 
@@ -66,36 +65,15 @@ func NewSecondaryTickScheduler(
 	ticker.Engine = engine
 	ticker.Freq = freq
 	ticker.secondary = true
-	ticker.nextTickTime = -1 // This will make sure the first tick is scheduled
 
+	ticker.nextTickTime = -1
 	return ticker
 }
 
 // TickNow schedule a Tick event at the current time.
-func (t *TickScheduler) TickNow() {
+func (t *TickScheduler) TickNow(now VTimeInSec) {
 	t.lock.Lock()
-	time := t.CurrentTime()
-
-	if t.nextTickTime >= time {
-		t.lock.Unlock()
-		return
-	}
-
-	t.nextTickTime = t.Freq.ThisTick(time)
-	tick := MakeTickEvent(t.handler, t.nextTickTime)
-
-	if t.secondary {
-		tick.secondary = true
-	}
-
-	t.Engine.Schedule(tick)
-	t.lock.Unlock()
-}
-
-// TickLater will schedule a tick event at the cycle after the now time.
-func (t *TickScheduler) TickLater() {
-	t.lock.Lock()
-	time := t.Freq.NextTick(t.CurrentTime())
+	time := now
 
 	if t.nextTickTime >= time {
 		t.lock.Unlock()
@@ -103,18 +81,31 @@ func (t *TickScheduler) TickLater() {
 	}
 
 	t.nextTickTime = time
-	tick := MakeTickEvent(t.handler, t.nextTickTime)
-
+	tick := MakeTickEvent(time, t.handler)
 	if t.secondary {
 		tick.secondary = true
 	}
-
 	t.Engine.Schedule(tick)
 	t.lock.Unlock()
 }
 
-func (t *TickScheduler) CurrentTime() VTimeInSec {
-	return t.Engine.CurrentTime()
+// TickLater will schedule a tick event at the cycle after the now time.
+func (t *TickScheduler) TickLater(now VTimeInSec) {
+	t.lock.Lock()
+	time := t.Freq.NextTick(now)
+
+	if t.nextTickTime >= time {
+		t.lock.Unlock()
+		return
+	}
+
+	t.nextTickTime = time
+	tick := MakeTickEvent(time, t.handler)
+	if t.secondary {
+		tick.secondary = true
+	}
+	t.Engine.Schedule(tick)
+	t.lock.Unlock()
 }
 
 // TickingComponent is a type of component that update states from cycle to
@@ -129,25 +120,27 @@ type TickingComponent struct {
 
 // NotifyPortFree triggers the TickingComponent to start ticking again.
 func (c *TickingComponent) NotifyPortFree(
+	now VTimeInSec,
 	_ Port,
 ) {
-	c.TickLater()
+	c.TickLater(now)
 }
 
 // NotifyRecv triggers the TickingComponent to start ticking again.
 func (c *TickingComponent) NotifyRecv(
+	now VTimeInSec,
 	_ Port,
 ) {
-	c.TickLater()
+	c.TickLater(now)
 }
 
 // Handle triggers the tick function of the TickingComponent
 func (c *TickingComponent) Handle(e Event) error {
-	madeProgress := c.ticker.Tick()
+	now := e.Time()
+	madeProgress := c.ticker.Tick(now)
 	if madeProgress {
-		c.TickLater()
+		c.TickLater(now)
 	}
-
 	return nil
 }
 
@@ -162,7 +155,6 @@ func NewTickingComponent(
 	tc.TickScheduler = NewTickScheduler(tc, engine, freq)
 	tc.ComponentBase = NewComponentBase(name)
 	tc.ticker = ticker
-
 	return tc
 }
 
@@ -177,6 +169,5 @@ func NewSecondaryTickingComponent(
 	tc.TickScheduler = NewSecondaryTickScheduler(tc, engine, freq)
 	tc.ComponentBase = NewComponentBase(name)
 	tc.ticker = ticker
-
 	return tc
 }

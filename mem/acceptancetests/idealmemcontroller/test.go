@@ -5,42 +5,47 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/sim/directconnection"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
 
 	"os"
 	"time"
 
 	"log"
 
-	"github.com/sarchlab/akita/v4/mem/acceptancetests"
-	"github.com/sarchlab/akita/v4/mem/idealmemcontroller"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/mem/trace"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/acceptancetests"
+	"github.com/sarchlab/akita/v3/mem/idealmemcontroller"
+	"github.com/sarchlab/akita/v3/mem/trace"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 var seedFlag = flag.Int64("seed", 0, "Random Seed")
-var numAccessFlag = flag.Int("num-access",
-	100000, "Number of accesses to generate")
+var numAccessFlag = flag.Int("num-access", 100000, "Number of accesses to generate")
 var maxAddressFlag = flag.Uint64("max-address", 1048576, "Address range to use")
 var traceFileFlag = flag.String("trace", "", "Trace file")
 var parallelFlag = flag.Bool("parallel", false, "Test with parallel engine")
 
-func setupTest() (sim.Engine, *acceptancetests.MemAccessAgent) {
+func main() {
+	flag.Parse()
+
+	var seed int64
+	if *seedFlag == 0 {
+		seed = time.Now().UnixNano()
+	} else {
+		seed = *seedFlag
+	}
+	fmt.Fprintf(os.Stderr, "Seed %d\n", seed)
+	rand.Seed(seed)
+
 	var engine sim.Engine
 	if *parallelFlag {
 		engine = sim.NewParallelEngine()
 	} else {
 		engine = sim.NewSerialEngine()
 	}
-
 	engine.AcceptHook(sim.NewEventLogger(log.New(os.Stdout, "", 0)))
 
-	conn := directconnection.MakeBuilder().
-		WithEngine(engine).
-		WithFreq(1 * sim.GHz).
-		Build("Conn")
+	conn := sim.NewDirectConnection("Conn", engine, 1*sim.GHz)
 
 	agent := acceptancetests.NewMemAccessAgent(engine)
 	agent.MaxAddress = *maxAddressFlag
@@ -60,25 +65,10 @@ func setupTest() (sim.Engine, *acceptancetests.MemAccessAgent) {
 		tracing.CollectTrace(dram, tracer)
 	}
 
-	conn.PlugIn(agent.GetPortByName("Mem"))
-	conn.PlugIn(dram.GetPortByName("Top"))
+	conn.PlugIn(agent.GetPortByName("Mem"), 16)
+	conn.PlugIn(dram.GetPortByName("Top"), 16)
 
-	return engine, agent
-}
-
-func main() {
-	flag.Parse()
-
-	seed := *seedFlag
-	if seed == 0 {
-		seed = time.Now().UnixNano()
-	}
-
-	fmt.Fprintf(os.Stderr, "Seed %d\n", seed)
-	rand.Seed(seed)
-
-	engine, agent := setupTest()
-	agent.TickLater()
+	agent.TickLater(0)
 
 	err := engine.Run()
 	if err != nil {

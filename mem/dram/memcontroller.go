@@ -1,14 +1,14 @@
 package dram
 
 import (
-	"github.com/sarchlab/akita/v4/mem/dram/internal/addressmapping"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/cmdq"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/org"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/signal"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/trans"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/addressmapping"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/cmdq"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/org"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/signal"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/trans"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 // Protocol defines the category of the memory controller.
@@ -37,10 +37,9 @@ func (p Protocol) isHBM() bool {
 	return p == HBM || p == HBM2
 }
 
-// Comp is a MemController handles read and write requests.
-type Comp struct {
+// A MemController handles read and write requests.
+type MemController struct {
 	*sim.TickingComponent
-	sim.MiddlewareHolder
 
 	topPort sim.Port
 
@@ -55,28 +54,19 @@ type Comp struct {
 	inflightTransactions []*signal.Transaction
 }
 
-func (c *Comp) Tick() bool {
-	return c.MiddlewareHolder.Tick()
-}
-
-type middleware struct {
-	*Comp
-}
-
 // Tick updates memory controller's internal state.
-func (m *middleware) Tick() (madeProgress bool) {
-	madeProgress = m.respond() || madeProgress
-	madeProgress = m.respond() || madeProgress
-	madeProgress = m.channel.Tick() || madeProgress
-	madeProgress = m.issue() || madeProgress
-	madeProgress = m.subTransactionQueue.Tick() || madeProgress
-	madeProgress = m.parseTop() || madeProgress
-
+func (c *MemController) Tick(now sim.VTimeInSec) (madeProgress bool) {
+	madeProgress = c.respond(now) || madeProgress
+	madeProgress = c.respond(now) || madeProgress
+	madeProgress = c.channel.Tick(now) || madeProgress
+	madeProgress = c.issue(now) || madeProgress
+	madeProgress = c.subTransactionQueue.Tick(now) || madeProgress
+	madeProgress = c.parseTop(now) || madeProgress
 	return madeProgress
 }
 
-func (m *middleware) parseTop() (madeProgress bool) {
-	msg := m.topPort.PeekIncoming()
+func (c *MemController) parseTop(now sim.VTimeInSec) (madeProgress bool) {
+	msg := c.topPort.Peek()
 	if msg == nil {
 		return false
 	}
@@ -89,27 +79,26 @@ func (m *middleware) parseTop() (madeProgress bool) {
 		trans.Write = msg
 	}
 
-	m.assignTransInternalAddress(trans)
-	m.subTransSplitter.Split(trans)
+	c.assignTransInternalAddress(trans)
+	c.subTransSplitter.Split(trans)
 
-	if !m.subTransactionQueue.CanPush(len(trans.SubTransactions)) {
+	if !c.subTransactionQueue.CanPush(len(trans.SubTransactions)) {
 		return false
 	}
 
-	m.subTransactionQueue.Push(trans)
-	m.inflightTransactions = append(m.inflightTransactions, trans)
-	m.topPort.RetrieveIncoming()
+	c.subTransactionQueue.Push(trans)
+	c.inflightTransactions = append(c.inflightTransactions, trans)
+	c.topPort.Retrieve(now)
 
-	tracing.TraceReqReceive(msg, m.Comp)
-
+	tracing.TraceReqReceive(msg, c)
 	for _, st := range trans.SubTransactions {
 		tracing.StartTaskWithSpecificLocation(
 			st.ID,
-			tracing.MsgIDAtReceiver(msg, m.Comp),
-			m.Comp,
+			tracing.MsgIDAtReceiver(msg, c),
+			c,
 			"sub-trans",
 			"sub-trans",
-			m.Comp.Name()+".SubTransQueue",
+			c.Name()+".SubTransQueue",
 			nil,
 		)
 	}
@@ -120,9 +109,9 @@ func (m *middleware) parseTop() (madeProgress bool) {
 	return true
 }
 
-func (m *middleware) assignTransInternalAddress(trans *signal.Transaction) {
-	if m.addrConverter != nil {
-		trans.InternalAddress = m.addrConverter.ConvertExternalToInternal(
+func (c *MemController) assignTransInternalAddress(trans *signal.Transaction) {
+	if c.addrConverter != nil {
+		trans.InternalAddress = c.addrConverter.ConvertExternalToInternal(
 			trans.GlobalAddress())
 		return
 	}
@@ -130,22 +119,22 @@ func (m *middleware) assignTransInternalAddress(trans *signal.Transaction) {
 	trans.InternalAddress = trans.GlobalAddress()
 }
 
-func (m *middleware) issue() (madeProgress bool) {
-	cmd := m.cmdQueue.GetCommandToIssue()
+func (c *MemController) issue(now sim.VTimeInSec) (madeProgress bool) {
+	cmd := c.cmdQueue.GetCommandToIssue(now)
 	if cmd == nil {
 		return false
 	}
 
-	m.channel.StartCommand(cmd)
-	m.channel.UpdateTiming(cmd)
+	c.channel.StartCommand(now, cmd)
+	c.channel.UpdateTiming(now, cmd)
 
 	return true
 }
 
-func (m *middleware) respond() (madeProgress bool) {
-	for i, t := range m.inflightTransactions {
+func (c *MemController) respond(now sim.VTimeInSec) (madeProgress bool) {
+	for i, t := range c.inflightTransactions {
 		if t.IsCompleted() {
-			done := m.finalizeTransaction(t, i)
+			done := c.finalizeTransaction(now, t, i)
 			if done {
 				return true
 			}
@@ -155,45 +144,47 @@ func (m *middleware) respond() (madeProgress bool) {
 	return false
 }
 
-func (m *middleware) finalizeTransaction(
+func (c *MemController) finalizeTransaction(
+	now sim.VTimeInSec,
 	t *signal.Transaction,
 	i int,
 ) (done bool) {
 	if t.Write != nil {
-		done = m.finalizeWriteTrans(t, i)
+		done = c.finalizeWriteTrans(now, t, i)
 		if done {
-			tracing.TraceReqComplete(t.Write, m.Comp)
+			tracing.TraceReqComplete(t.Write, c)
 		}
 	} else {
-		done = m.finalizeReadTrans(t, i)
+		done = c.finalizeReadTrans(now, t, i)
 		if done {
-			tracing.TraceReqComplete(t.Read, m.Comp)
+			tracing.TraceReqComplete(t.Read, c)
 		}
 	}
 
 	return done
 }
 
-func (m *middleware) finalizeWriteTrans(
+func (c *MemController) finalizeWriteTrans(
+	now sim.VTimeInSec,
 	t *signal.Transaction,
 	i int,
 ) (done bool) {
-	err := m.storage.Write(t.InternalAddress, t.Write.Data)
+	err := c.storage.Write(t.InternalAddress, t.Write.Data)
 	if err != nil {
 		panic(err)
 	}
 
 	writeDone := mem.WriteDoneRspBuilder{}.
-		WithSrc(m.topPort.AsRemote()).
+		WithSrc(c.topPort).
 		WithDst(t.Write.Src).
 		WithRspTo(t.Write.ID).
+		WithSendTime(now).
 		Build()
-
-	sendErr := m.topPort.Send(writeDone)
+	sendErr := c.topPort.Send(writeDone)
 	if sendErr == nil {
-		m.inflightTransactions = append(
-			m.inflightTransactions[:i],
-			m.inflightTransactions[i+1:]...)
+		c.inflightTransactions = append(
+			c.inflightTransactions[:i],
+			c.inflightTransactions[i+1:]...)
 
 		// fmt.Printf("%.10f, %s, finish transaction %s, %x\n",
 		// 	now, c.Name(), t.Write.ID, t.InternalAddress)
@@ -203,27 +194,28 @@ func (m *middleware) finalizeWriteTrans(
 	return false
 }
 
-func (m *middleware) finalizeReadTrans(
+func (c *MemController) finalizeReadTrans(
+	now sim.VTimeInSec,
 	t *signal.Transaction,
 	i int,
 ) (done bool) {
-	data, err := m.storage.Read(t.InternalAddress, t.Read.AccessByteSize)
+	data, err := c.storage.Read(t.InternalAddress, t.Read.AccessByteSize)
 	if err != nil {
 		panic(err)
 	}
 
 	dataReady := mem.DataReadyRspBuilder{}.
-		WithSrc(m.topPort.AsRemote()).
+		WithSrc(c.topPort).
 		WithDst(t.Read.Src).
 		WithData(data).
 		WithRspTo(t.Read.ID).
+		WithSendTime(now).
 		Build()
-
-	sendErr := m.topPort.Send(dataReady)
+	sendErr := c.topPort.Send(dataReady)
 	if sendErr == nil {
-		m.inflightTransactions = append(
-			m.inflightTransactions[:i],
-			m.inflightTransactions[i+1:]...)
+		c.inflightTransactions = append(
+			c.inflightTransactions[:i],
+			c.inflightTransactions[i+1:]...)
 
 		// fmt.Printf("%.10f, %s, finish transaction %s, %x\n",
 		// 	now, c.Name(), t.Read.ID, t.InternalAddress)

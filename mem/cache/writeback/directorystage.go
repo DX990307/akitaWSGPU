@@ -3,12 +3,12 @@ package writeback
 import (
 	"fmt"
 
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/mem/vm"
-	"github.com/sarchlab/akita/v4/pipelining"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/mem/vm"
+	"github.com/sarchlab/akita/v3/pipelining"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 type dirPipelineItem struct {
@@ -20,22 +20,24 @@ func (i dirPipelineItem) TaskID() string {
 }
 
 type directoryStage struct {
-	cache    *Comp
+	cache    *Cache
 	pipeline pipelining.Pipeline
 	buf      sim.Buffer
 }
 
-func (ds *directoryStage) Tick() (madeProgress bool) {
-	madeProgress = ds.acceptNewTransaction() || madeProgress
+func (ds *directoryStage) Tick(now sim.VTimeInSec) (madeProgress bool) {
+	madeProgress = ds.acceptNewTransaction(now) || madeProgress
 
-	madeProgress = ds.pipeline.Tick() || madeProgress
+	madeProgress = ds.pipeline.Tick(now) || madeProgress
 
-	madeProgress = ds.processTransaction() || madeProgress
+	madeProgress = ds.processTransaction(now) || madeProgress
 
 	return madeProgress
 }
 
-func (ds *directoryStage) processTransaction() bool {
+func (ds *directoryStage) processTransaction(
+	now sim.VTimeInSec,
+) bool {
 	madeProgress := false
 
 	for i := 0; i < ds.cache.numReqPerCycle; i++ {
@@ -48,23 +50,22 @@ func (ds *directoryStage) processTransaction() bool {
 
 		addr := trans.accessReq().GetAddress()
 		cacheLineID, _ := getCacheLineID(addr, ds.cache.log2BlockSize)
-
 		if _, evicting := ds.cache.evictingList[cacheLineID]; evicting {
 			break
 		}
 
 		if trans.read != nil {
-			madeProgress = ds.doRead(trans) || madeProgress
+			madeProgress = ds.doRead(now, trans) || madeProgress
 			continue
 		}
 
-		madeProgress = ds.doWrite(trans) || madeProgress
+		madeProgress = ds.doWrite(now, trans) || madeProgress
 	}
 
 	return madeProgress
 }
 
-func (ds *directoryStage) acceptNewTransaction() bool {
+func (ds *directoryStage) acceptNewTransaction(now sim.VTimeInSec) bool {
 	madeProgress := false
 
 	for i := 0; i < ds.cache.numReqPerCycle; i++ {
@@ -78,7 +79,7 @@ func (ds *directoryStage) acceptNewTransaction() bool {
 		}
 
 		trans := item.(*transaction)
-		ds.pipeline.Accept(dirPipelineItem{trans})
+		ds.pipeline.Accept(now, dirPipelineItem{trans})
 		ds.cache.dirStageBuffer.Pop()
 
 		madeProgress = true
@@ -87,37 +88,40 @@ func (ds *directoryStage) acceptNewTransaction() bool {
 	return madeProgress
 }
 
-func (ds *directoryStage) Reset() {
+func (ds *directoryStage) Reset(now sim.VTimeInSec) {
 	ds.pipeline.Clear()
 	ds.buf.Clear()
 	ds.cache.dirStageBuffer.Clear()
 }
 
-func (ds *directoryStage) doRead(trans *transaction) bool {
+func (ds *directoryStage) doRead(
+	now sim.VTimeInSec,
+	trans *transaction,
+) bool {
 	cachelineID, _ := getCacheLineID(
 		trans.read.Address, ds.cache.log2BlockSize)
 
 	mshrEntry := ds.cache.mshr.Query(trans.read.PID, cachelineID)
 	if mshrEntry != nil {
-		return ds.handleReadMSHRHit(trans, mshrEntry)
+		return ds.handleReadMSHRHit(now, trans, mshrEntry)
 	}
 
 	block := ds.cache.directory.Lookup(
 		trans.read.PID, cachelineID)
 	if block != nil {
-		return ds.handleReadHit(trans, block)
+		return ds.handleReadHit(now, trans, block)
 	}
 
-	return ds.handleReadMiss(trans)
+	return ds.handleReadMiss(now, trans)
 }
 
 func (ds *directoryStage) handleReadMSHRHit(
+	now sim.VTimeInSec,
 	trans *transaction,
 	mshrEntry *cache.MSHREntry,
 ) bool {
 	trans.mshrEntry = mshrEntry
 	mshrEntry.Requests = append(mshrEntry.Requests, trans)
-
 	ds.buf.Pop()
 
 	tracing.AddTaskStep(
@@ -130,6 +134,7 @@ func (ds *directoryStage) handleReadMSHRHit(
 }
 
 func (ds *directoryStage) handleReadHit(
+	now sim.VTimeInSec,
 	trans *transaction,
 	block *cache.Block,
 ) bool {
@@ -143,12 +148,11 @@ func (ds *directoryStage) handleReadHit(
 		"read-hit",
 	)
 
-	// log.Printf("%.10f, %s, dir read hit， %s, %04X, %04X, (%d, %d), %v\n",
+	// fmt.Printf("%.10f, %s, dir read hit, %s, %04X, %04X, (%d, %d), %v\n",
 	// 	now, ds.cache.Name(),
 	// 	trans.read.ID,
 	// 	trans.read.Address,
-	// 	(trans.read.GetAddress()>>ds.cache.log2BlockSize)
-	// 	<<ds.cache.log2BlockSize,
+	// 	(trans.read.GetAddress()>>ds.cache.log2BlockSize)<<ds.cache.log2BlockSize,
 	// 	block.SetID, block.WayID,
 	// 	nil,
 	// )
@@ -156,7 +160,10 @@ func (ds *directoryStage) handleReadHit(
 	return ds.readFromBank(trans, block)
 }
 
-func (ds *directoryStage) handleReadMiss(trans *transaction) bool {
+func (ds *directoryStage) handleReadMiss(
+	now sim.VTimeInSec,
+	trans *transaction,
+) bool {
 	req := trans.read
 	cacheLineID, _ := getCacheLineID(req.Address, ds.cache.log2BlockSize)
 
@@ -169,48 +176,59 @@ func (ds *directoryStage) handleReadMiss(trans *transaction) bool {
 		return false
 	}
 
-	// log.Printf("%.10f, %s, dir read miss， %s, %04X, %04X, (%d, %d), %v\n",
-	// 	now, ds.cache.Name(),
-	// 	trans.read.ID,
-	// 	trans.read.Address,
-	// 	(trans.read.GetAddress()>>ds.cache.log2BlockSize)<<
-	// 	ds.cache.log2BlockSize,
-	// 	victim.SetID, victim.WayID,
-	// 	nil,
-	// )
-
 	if ds.needEviction(victim) {
-		ok := ds.evict(trans, victim)
+		ok := ds.evict(now, trans, victim)
 		if ok {
 			tracing.AddTaskStep(
 				tracing.MsgIDAtReceiver(trans.read, ds.cache),
 				ds.cache,
 				"read-miss",
 			)
+
+			// fmt.Printf("%.10f, %s, dir read miss, %s, %04X, %04X, (%d, %d), %v\n",
+			// 	now, ds.cache.Name(),
+			// 	trans.read.ID,
+			// 	trans.read.Address,
+			// 	(trans.read.GetAddress()>>ds.cache.log2BlockSize)<<ds.cache.log2BlockSize,
+			// 	victim.SetID, victim.WayID,
+			// 	nil,
+			// )
 		}
 
 		return ok
 	}
 
-	ok := ds.fetch(trans, victim)
+	ok := ds.fetch(now, trans, victim)
 	if ok {
 		tracing.AddTaskStep(
 			tracing.MsgIDAtReceiver(trans.read, ds.cache),
 			ds.cache,
 			"read-miss",
 		)
+
+		// fmt.Printf("%.10f, %s, dir read miss, %s, %04X, %04X, (%d, %d), %v\n",
+		// 	now, ds.cache.Name(),
+		// 	trans.read.ID,
+		// 	trans.read.Address,
+		// 	(trans.read.GetAddress()>>ds.cache.log2BlockSize)<<ds.cache.log2BlockSize,
+		// 	victim.SetID, victim.WayID,
+		// 	nil,
+		// )
 	}
 
 	return ok
 }
 
-func (ds *directoryStage) doWrite(trans *transaction) bool {
+func (ds *directoryStage) doWrite(
+	now sim.VTimeInSec,
+	trans *transaction,
+) bool {
 	write := trans.write
 	cachelineID, _ := getCacheLineID(write.Address, ds.cache.log2BlockSize)
 
 	mshrEntry := ds.cache.mshr.Query(write.PID, cachelineID)
 	if mshrEntry != nil {
-		ok := ds.doWriteMSHRHit(trans, mshrEntry)
+		ok := ds.doWriteMSHRHit(now, trans, mshrEntry)
 		tracing.AddTaskStep(
 			tracing.MsgIDAtReceiver(trans.write, ds.cache),
 			ds.cache,
@@ -234,7 +252,7 @@ func (ds *directoryStage) doWrite(trans *transaction) bool {
 		return ok
 	}
 
-	ok := ds.doWriteMiss(trans)
+	ok := ds.doWriteMiss(now, trans)
 	if ok {
 		tracing.AddTaskStep(
 			tracing.MsgIDAtReceiver(trans.write, ds.cache),
@@ -247,12 +265,12 @@ func (ds *directoryStage) doWrite(trans *transaction) bool {
 }
 
 func (ds *directoryStage) doWriteMSHRHit(
+	now sim.VTimeInSec,
 	trans *transaction,
 	mshrEntry *cache.MSHREntry,
 ) bool {
 	trans.mshrEntry = mshrEntry
 	mshrEntry.Requests = append(mshrEntry.Requests, trans)
-
 	ds.buf.Pop()
 
 	return true
@@ -269,17 +287,19 @@ func (ds *directoryStage) doWriteHit(
 	return ds.writeToBank(trans, block)
 }
 
-func (ds *directoryStage) doWriteMiss(trans *transaction) bool {
+func (ds *directoryStage) doWriteMiss(
+	now sim.VTimeInSec,
+	trans *transaction,
+) bool {
 	write := trans.write
 
 	if ds.isWritingFullLine(write) {
-		return ds.writeFullLineMiss(trans)
+		return ds.writeFullLineMiss(now, trans)
 	}
-
-	return ds.writePartialLineMiss(trans)
+	return ds.writePartialLineMiss(now, trans)
 }
 
-func (ds *directoryStage) writeFullLineMiss(trans *transaction) bool {
+func (ds *directoryStage) writeFullLineMiss(now sim.VTimeInSec, trans *transaction) bool {
 	write := trans.write
 	cachelineID, _ := getCacheLineID(write.Address, ds.cache.log2BlockSize)
 
@@ -289,13 +309,16 @@ func (ds *directoryStage) writeFullLineMiss(trans *transaction) bool {
 	}
 
 	if ds.needEviction(victim) {
-		return ds.evict(trans, victim)
+		return ds.evict(now, trans, victim)
 	}
 
 	return ds.writeToBank(trans, victim)
 }
 
-func (ds *directoryStage) writePartialLineMiss(trans *transaction) bool {
+func (ds *directoryStage) writePartialLineMiss(
+	now sim.VTimeInSec,
+	trans *transaction,
+) bool {
 	write := trans.write
 	cachelineID, _ := getCacheLineID(write.Address, ds.cache.log2BlockSize)
 
@@ -308,8 +331,7 @@ func (ds *directoryStage) writePartialLineMiss(trans *transaction) bool {
 		return false
 	}
 
-	// log.Printf("%.10f, %s, write partial line ，"+
-	// " %s, %04X, %04X, (%d, %d), %v\n",
+	// fmt.Printf("%.10f, %s, write partial line , %s, %04X, %04X, (%d, %d), %v\n",
 	// 	now, ds.cache.Name(),
 	// 	trans.write.ID,
 	// 	trans.write.Address, cachelineID,
@@ -318,10 +340,22 @@ func (ds *directoryStage) writePartialLineMiss(trans *transaction) bool {
 	// )
 
 	if ds.needEviction(victim) {
-		return ds.evict(trans, victim)
+
+		ok := ds.evict(now, trans, victim)
+		if ok {
+			// fmt.Printf("%.10f, %s, dir read miss, %s, %04X, %04X, (%d, %d), %v\n",
+			// 	now, ds.cache.Name(),
+			// 	trans.read.ID,
+			// 	trans.read.Address,
+			// 	(trans.read.GetAddress()>>ds.cache.log2BlockSize)<<ds.cache.log2BlockSize,
+			// 	victim.SetID, victim.WayID,
+			// 	nil,
+			// )
+		}
+		return ok
 	}
 
-	return ds.fetch(trans, victim)
+	return ds.fetch(now, trans, victim)
 }
 
 func (ds *directoryStage) readFromBank(
@@ -337,14 +371,11 @@ func (ds *directoryStage) readFromBank(
 	}
 
 	ds.cache.directory.Visit(block)
-
 	block.ReadCount++
 	trans.block = block
 	trans.action = bankReadHit
-
 	ds.buf.Pop()
 	bankBuf.Push(trans)
-
 	return true
 }
 
@@ -370,7 +401,6 @@ func (ds *directoryStage) writeToBank(
 	block.PID = trans.write.PID
 	trans.block = block
 	trans.action = bankWriteHit
-
 	ds.buf.Pop()
 	bankBuf.Push(trans)
 
@@ -378,6 +408,7 @@ func (ds *directoryStage) writeToBank(
 }
 
 func (ds *directoryStage) evict(
+	now sim.VTimeInSec,
 	trans *transaction,
 	victim *cache.Block,
 ) bool {
@@ -389,11 +420,8 @@ func (ds *directoryStage) evict(
 		return false
 	}
 
-	var (
-		addr uint64
-		pid  vm.PID
-	)
-
+	var addr uint64
+	var pid vm.PID
 	if trans.read != nil {
 		addr = trans.read.Address
 		pid = trans.read.PID
@@ -409,10 +437,9 @@ func (ds *directoryStage) evict(
 
 	ds.buf.Pop()
 	bankBuf.Push(trans)
-
 	ds.cache.evictingList[trans.victim.Tag] = true
 
-	// log.Printf("%.10f, %s, directory evict ， %s, %04X, %04X, (%d, %d), %v\n",
+	// fmt.Printf("%.10f, %s, directory evict , %s, %04X, %04X, (%d, %d), %v\n",
 	// 	now, ds.cache.Name(),
 	// 	trans.accessReq().Meta().ID,
 	// 	trans.accessReq().GetAddress(), trans.victim.Tag,
@@ -423,11 +450,7 @@ func (ds *directoryStage) evict(
 	return true
 }
 
-func (ds *directoryStage) updateVictimBlockMetaData(
-	victim *cache.Block,
-	cacheLineID uint64,
-	pid vm.PID,
-) {
+func (ds *directoryStage) updateVictimBlockMetaData(victim *cache.Block, cacheLineID uint64, pid vm.PID) {
 	victim.Tag = cacheLineID
 	victim.PID = pid
 	victim.IsLocked = true
@@ -479,15 +502,13 @@ func (ds *directoryStage) evictionNeedFetch(t *transaction) bool {
 }
 
 func (ds *directoryStage) fetch(
+	now sim.VTimeInSec,
 	trans *transaction,
 	block *cache.Block,
 ) bool {
-	var (
-		addr uint64
-		pid  vm.PID
-		req  mem.AccessReq
-	)
-
+	var addr uint64
+	var pid vm.PID
+	var req mem.AccessReq
 	if trans.read != nil {
 		req = trans.read
 		addr = trans.read.Address
@@ -497,7 +518,6 @@ func (ds *directoryStage) fetch(
 		addr = trans.write.Address
 		pid = trans.write.PID
 	}
-
 	cacheLineID, _ := getCacheLineID(addr, ds.cache.log2BlockSize)
 
 	bankNum := bankID(block,

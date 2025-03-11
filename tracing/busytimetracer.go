@@ -3,7 +3,7 @@ package tracing
 import (
 	"container/list"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 type taskTimeStartEnd struct {
@@ -101,7 +101,6 @@ func (t *BusyTimeTracer) EndTask(task Task) {
 	time := originalTask.Value.(*taskTimeStartEnd)
 	time.end = task.EndTime
 	time.completed = true
-
 	delete(t.inflightTasks, task.ID)
 
 	t.collapse(task.EndTime)
@@ -126,7 +125,6 @@ func (t *BusyTimeTracer) collapse(now sim.VTimeInSec) {
 
 		if task.completed && task.end <= now {
 			finishedTasks = append(finishedTasks, task)
-
 			t.taskTimes.Remove(e)
 		}
 	}
@@ -172,7 +170,6 @@ func (t *BusyTimeTracer) taskBusyTime(
 
 			if t.taskTimeOverlap(t1, t2) {
 				coveredMask[j] = true
-
 				t.extendTaskTime(&extTime, t2)
 			}
 		}

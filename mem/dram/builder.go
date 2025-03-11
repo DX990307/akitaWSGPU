@@ -3,16 +3,16 @@ package dram
 import (
 	"fmt"
 
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
 
-	"github.com/sarchlab/akita/v4/mem/dram/internal/signal"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/signal"
+	"github.com/sarchlab/akita/v3/tracing"
 
-	"github.com/sarchlab/akita/v4/mem/dram/internal/addressmapping"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/cmdq"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/org"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/trans"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/addressmapping"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/cmdq"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/org"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/trans"
 )
 
 // Builder can build new memory controllers.
@@ -132,7 +132,6 @@ func (b Builder) WithFreq(freq sim.Freq) Builder {
 func (b Builder) WithGlobalStorage(s *mem.Storage) Builder {
 	b.storage = s
 	b.useGlobalStorage = true
-
 	return b
 }
 
@@ -161,7 +160,6 @@ func (b Builder) WithInterleavingAddrConversion(
 		CurrentElementIndex: currentUnitIndex,
 		Offset:              lowerBound,
 	}
-
 	return b
 }
 
@@ -394,8 +392,8 @@ func (b Builder) WithRFCb(cycle int) Builder {
 }
 
 // Build builds a new MemController.
-func (b Builder) Build(name string) *Comp {
-	m := &Comp{
+func (b Builder) Build(name string) *MemController {
+	m := &MemController{
 		addrConverter: b.addrConverter,
 		storage:       b.storage,
 	}
@@ -441,11 +439,8 @@ func (b Builder) Build(name string) *Comp {
 		m.storage = mem.NewStorage(uint64(totalSize))
 	}
 
-	m.topPort = sim.NewPort(m, 1024, 1024, name+".TopPort")
+	m.topPort = sim.NewLimitNumMsgPort(m, 1024, name+".TopPort")
 	m.AddPort("Top", m.topPort)
-
-	middleware := &middleware{Comp: m}
-	m.AddMiddleware(middleware)
 
 	return m
 }
@@ -456,7 +451,7 @@ func (b Builder) attachTracers(hookable tracing.NamedHookable) {
 	}
 }
 
-func (b Builder) buildChannel(name string, m *Comp) {
+func (b Builder) buildChannel(name string, m *MemController) {
 	timing := b.generateTiming()
 	channel := &org.ChannelImpl{
 		Timing: timing,
@@ -496,7 +491,6 @@ func (b Builder) buildChannel(name string, m *Comp) {
 			}
 		}
 	}
-
 	m.channel = channel
 }
 
@@ -546,12 +540,10 @@ func (b *Builder) generateTiming() org.Timing {
 	activateToPrecharge := b.tRAS
 	activateToRead := b.tRCD - b.tAL
 	activateToWrite := b.tRCD - b.tAL
-
 	if b.protocol.isGDDR() || b.protocol.isHBM() {
 		activateToRead = b.tRCDRD
 		activateToWrite = b.tRCDWR
 	}
-
 	activateToRefresh := b.tRC // need to precharge before ref, so it's tRC
 
 	refreshToRefresh := b.tREFI
@@ -789,7 +781,6 @@ func (b *Builder) burstLengthMustNotBeZero() {
 func log2(n uint64) (uint64, bool) {
 	oneCount := 0
 	onePos := uint64(0)
-
 	for i := uint64(0); i < 64; i++ {
 		if n&(1<<i) > 0 {
 			onePos = i

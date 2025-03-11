@@ -1,9 +1,43 @@
 package sim
 
 import (
-	"fmt"
 	"sync"
 )
+
+// A Port is owned by a component and is used to plugin connections
+type Port interface {
+	// Embed interface
+	Named
+	Hookable
+
+	SetConnection(conn Connection)
+	Component() Component
+
+	// For connection
+	Recv(msg Msg) *SendError
+	NotifyAvailable(now VTimeInSec)
+
+	// For component
+	CanSend() bool
+	Send(msg Msg) *SendError
+	Retrieve(now VTimeInSec) Msg
+	Peek() Msg
+}
+
+// LimitNumMsgPort is a type of port that can hold at most a certain number
+// of messages.
+type LimitNumMsgPort struct {
+	HookableBase
+
+	name string
+	comp Component
+	conn Connection
+
+	buf          Buffer
+	bufLock      sync.RWMutex
+	portBusy     bool
+	portBusyLock sync.RWMutex
+}
 
 // HookPosPortMsgSend marks when a message is sent out from the port.
 var HookPosPortMsgSend = &HookPos{Name: "Port Msg Send"}
@@ -11,128 +45,56 @@ var HookPosPortMsgSend = &HookPos{Name: "Port Msg Send"}
 // HookPosPortMsgRecvd marks when an inbound message arrives at a the given port
 var HookPosPortMsgRecvd = &HookPos{Name: "Port Msg Recv"}
 
-// HookPosPortMsgRetrieve marks when an outbound message is sent over a
-// connection
+// HookPosPortMsgRetrieve marks when an outbound message is sent over a connection
 var HookPosPortMsgRetrieve = &HookPos{Name: "Port Msg Retrieve"}
 
-// A RemotePort is a string that refers to another port.
-type RemotePort string
-
-// A Port is owned by a component and is used to plugin connections
-type Port interface {
-	Named
-	Hookable
-
-	AsRemote() RemotePort
-
-	SetConnection(conn Connection)
-	Component() Component
-
-	// For connection
-	Deliver(msg Msg) *SendError
-	NotifyAvailable()
-	RetrieveOutgoing() Msg
-	PeekOutgoing() Msg
-
-	// For component
-	CanSend() bool
-	Send(msg Msg) *SendError
-	RetrieveIncoming() Msg
-	PeekIncoming() Msg
-}
-
-// DefaultPort implements the port interface.
-type defaultPort struct {
-	HookableBase
-
-	lock sync.Mutex
-	name string
-	comp Component
-	conn Connection
-
-	incomingBuf Buffer
-	outgoingBuf Buffer
-}
-
-// AsRemote returns the remote port name.
-func (p *defaultPort) AsRemote() RemotePort {
-	return RemotePort(p.name)
-}
-
 // SetConnection sets which connection plugged in to this port.
-func (p *defaultPort) SetConnection(conn Connection) {
-	if p.conn != nil {
-		connName := p.conn.Name()
-		newConnName := conn.Name()
-		panicMsg := fmt.Sprintf(
-			"connection already set to %s, now connecting to %s",
-			connName, newConnName,
-		)
-		panic(panicMsg)
-	}
-
+func (p *LimitNumMsgPort) SetConnection(conn Connection) {
 	p.conn = conn
 }
 
 // Component returns the owner component of the port.
-func (p *defaultPort) Component() Component {
+func (p *LimitNumMsgPort) Component() Component {
 	return p.comp
 }
 
 // Name returns the name of the port.
-func (p *defaultPort) Name() string {
+func (p *LimitNumMsgPort) Name() string {
 	return p.name
 }
 
 // CanSend checks if the port can send a message without error.
-func (p *defaultPort) CanSend() bool {
-	p.lock.Lock()
-	defer p.lock.Unlock()
-
-	canSend := p.outgoingBuf.CanPush()
-
-	return canSend
+func (p *LimitNumMsgPort) CanSend() bool {
+	return p.conn.CanSend(p)
 }
 
 // Send is used to send a message out from a component
-func (p *defaultPort) Send(msg Msg) *SendError {
-	p.lock.Lock()
+func (p *LimitNumMsgPort) Send(msg Msg) *SendError {
+	err := p.conn.Send(msg)
 
-	p.msgMustBeValid(msg)
-
-	if !p.outgoingBuf.CanPush() {
-		p.lock.Unlock()
-		return NewSendError()
+	if err == nil {
+		hookCtx := HookCtx{
+			Domain: p,
+			Pos:    HookPosPortMsgSend,
+			Item:   msg,
+		}
+		p.InvokeHook(hookCtx)
 	}
 
-	wasEmpty := (p.outgoingBuf.Size() == 0)
-	p.outgoingBuf.Push(msg)
-
-	hookCtx := HookCtx{
-		Domain: p,
-		Pos:    HookPosPortMsgSend,
-		Item:   msg,
-	}
-	p.InvokeHook(hookCtx)
-	p.lock.Unlock()
-
-	if wasEmpty {
-		p.conn.NotifySend()
-	}
-
-	return nil
+	return err
 }
 
-// Deliver is used to deliver a message to a component
-func (p *defaultPort) Deliver(msg Msg) *SendError {
-	p.lock.Lock()
+// Recv is used to deliver a message to a component
+func (p *LimitNumMsgPort) Recv(msg Msg) *SendError {
+	p.bufLock.Lock()
 
-	if !p.incomingBuf.CanPush() {
-		p.lock.Unlock()
+	if !p.buf.CanPush() {
+		p.portBusyLock.Lock()
+		p.portBusy = true
+		p.portBusyLock.Unlock()
+		p.bufLock.Unlock()
 		return NewSendError()
 	}
-
-	wasEmpty := (p.incomingBuf.Size() == 0)
 
 	hookCtx := HookCtx{
 		Domain: p,
@@ -141,23 +103,21 @@ func (p *defaultPort) Deliver(msg Msg) *SendError {
 	}
 	p.InvokeHook(hookCtx)
 
-	p.incomingBuf.Push(msg)
-	p.lock.Unlock()
+	p.buf.Push(msg)
+	p.bufLock.Unlock()
 
-	if p.comp != nil && wasEmpty {
-		p.comp.NotifyRecv(p)
+	if p.comp != nil {
+		p.comp.NotifyRecv(msg.Meta().RecvTime, p)
 	}
-
 	return nil
 }
 
-// RetrieveIncoming is used by the component to take a message from the incoming
-// buffer
-func (p *defaultPort) RetrieveIncoming() Msg {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+// Retrieve is used by the component to take a message from the incoming buffer
+func (p *LimitNumMsgPort) Retrieve(now VTimeInSec) Msg {
+	p.bufLock.Lock()
+	defer p.bufLock.Unlock()
 
-	item := p.incomingBuf.Pop()
+	item := p.buf.Pop()
 	if item == nil {
 		return nil
 	}
@@ -170,114 +130,63 @@ func (p *defaultPort) RetrieveIncoming() Msg {
 	}
 	p.InvokeHook(hookCtx)
 
-	if p.incomingBuf.Size() == p.incomingBuf.Capacity()-1 {
-		p.conn.NotifyAvailable(p)
+	p.portBusyLock.Lock()
+	if p.portBusy {
+		p.portBusy = false
+		p.conn.NotifyAvailable(now, p)
 	}
+	p.portBusyLock.Unlock()
 
 	return msg
 }
 
-// RetrieveOutgoing is used by the component to take a message from the outgoing
-// buffer
-func (p *defaultPort) RetrieveOutgoing() Msg {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+// Peek returns the first message in the port without removing it.
+func (p *LimitNumMsgPort) Peek() Msg {
+	p.bufLock.RLock()
+	defer p.bufLock.RUnlock()
 
-	item := p.outgoingBuf.Pop()
+	item := p.buf.Peek()
 	if item == nil {
 		return nil
 	}
 
 	msg := item.(Msg)
-	hookCtx := HookCtx{
-		Domain: p,
-		Pos:    HookPosPortMsgRetrieve,
-		Item:   msg,
-	}
-	p.InvokeHook(hookCtx)
-
-	if p.outgoingBuf.Size() == p.outgoingBuf.Capacity()-1 {
-		p.comp.NotifyPortFree(p)
-	}
-
-	return msg
-}
-
-// PeekIncoming returns the first message in the incoming buffer without
-// removing it.
-func (p *defaultPort) PeekIncoming() Msg {
-	p.lock.Lock()
-	defer p.lock.Unlock()
-
-	item := p.incomingBuf.Peek()
-	if item == nil {
-		return nil
-	}
-
-	msg := item.(Msg)
-
-	return msg
-}
-
-// PeekOutgoing returns the first message in the outgoing buffer without
-// removing it.
-func (p *defaultPort) PeekOutgoing() Msg {
-	p.lock.Lock()
-	defer p.lock.Unlock()
-
-	item := p.outgoingBuf.Peek()
-	if item == nil {
-		return nil
-	}
-
-	msg := item.(Msg)
-
 	return msg
 }
 
 // NotifyAvailable is called by the connection to notify the port that the
 // connection is available again
-func (p *defaultPort) NotifyAvailable() {
+func (p *LimitNumMsgPort) NotifyAvailable(now VTimeInSec) {
 	if p.comp != nil {
-		p.comp.NotifyPortFree(p)
+		p.comp.NotifyPortFree(now, p)
 	}
 }
 
-// NewPort creates a new port with default behavior.
-func NewPort(
+// NewLimitNumMsgPort creates a new port that works for the provided component
+func NewLimitNumMsgPort(
 	comp Component,
-	incomingBufCap, outgoingBufCap int,
+	capacity int,
 	name string,
-) Port {
-	p := new(defaultPort)
+) *LimitNumMsgPort {
+	p := new(LimitNumMsgPort)
 	p.comp = comp
-	p.incomingBuf = NewBuffer(name+".IncomingBuf", incomingBufCap)
-	p.outgoingBuf = NewBuffer(name+".OutgoingBuf", outgoingBufCap)
+	p.buf = NewBuffer(name+".Buf", capacity)
 	p.name = name
-
 	return p
 }
 
-func (p *defaultPort) msgMustBeValid(msg Msg) {
-	portMustBeMsgSrc(p, msg)
-	dstMustNotBeEmpty(msg.Meta().Dst)
-	srcDstMustNotBeTheSame(msg)
-}
+// NewLimitNumMsgPortWithExternalBuffer creates a new port that works for the
+// provided component and uses the provided buffer.
+func NewLimitNumMsgPortWithExternalBuffer(
+	comp Component,
+	buf Buffer,
+	name string,
+) *LimitNumMsgPort {
+	NameMustBeValid(name)
 
-func portMustBeMsgSrc(port Port, msg Msg) {
-	if port.Name() != string(msg.Meta().Src) {
-		panic("sending port is not msg src")
-	}
-}
-
-func dstMustNotBeEmpty(port RemotePort) {
-	if port == "" {
-		panic("dst is not given")
-	}
-}
-
-func srcDstMustNotBeTheSame(msg Msg) {
-	if msg.Meta().Src == msg.Meta().Dst {
-		panic("sending back to src")
-	}
+	p := new(LimitNumMsgPort)
+	p.comp = comp
+	p.buf = buf
+	p.name = name
+	return p
 }

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/sarchlab/akita/v4/monitoring"
-	"github.com/sarchlab/akita/v4/noc/acceptance"
-	"github.com/sarchlab/akita/v4/noc/networking/pcie"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/monitoring"
+	"github.com/sarchlab/akita/v3/noc/acceptance"
+	"github.com/sarchlab/akita/v3/noc/networking/pcie"
+	"github.com/sarchlab/akita/v3/sim"
 	"github.com/tebeka/atexit"
 )
 
@@ -43,13 +43,11 @@ func createNetwork(engine sim.Engine, test *acceptance.Test) {
 	monitor.StartServer()
 
 	freq := 1.0 * sim.GHz
-
 	var agents []*acceptance.Agent
-
 	for i := 0; i < numDevicePerSwitch*2+1; i++ {
 		agent := acceptance.NewAgent(
 			engine, freq, fmt.Sprintf("Agent%d", i), numPortPerDevice, test)
-		agent.TickLater()
+		agent.TickLater(0)
 		agents = append(agents, agent)
 		test.RegisterAgent(agent)
 		monitor.RegisterComponent(agent)
@@ -65,7 +63,6 @@ func createNetwork(engine sim.Engine, test *acceptance.Test) {
 	pcieConnector.CreateNetwork("PCIe")
 	rootComplexID := pcieConnector.AddRootComplex(agents[0].AgentPorts)
 	switch1ID := pcieConnector.AddSwitch(rootComplexID)
-
 	for i := 0; i < numDevicePerSwitch; i++ {
 		pcieConnector.PlugInDevice(switch1ID, agents[i+1].AgentPorts)
 	}

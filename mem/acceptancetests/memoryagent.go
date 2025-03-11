@@ -8,8 +8,8 @@ import (
 	"math/rand"
 	"reflect"
 
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 var dumpLog = false
@@ -36,14 +36,9 @@ func (a *MemAccessAgent) checkReadResult(
 	dataReady *mem.DataReadyRsp,
 ) {
 	found := false
-
-	var (
-		i     int
-		value uint32
-	)
-
+	var i int
+	var value uint32
 	result := bytesToUint32(dataReady.Data)
-
 	for i, value = range a.KnownMemValue[read.Address] {
 		if value == result {
 			found = true
@@ -59,26 +54,26 @@ func (a *MemAccessAgent) checkReadResult(
 }
 
 // Tick updates the states of the agent and issues new read and write requests.
-func (a *MemAccessAgent) Tick() bool {
+func (a *MemAccessAgent) Tick(now sim.VTimeInSec) bool {
 	madeProgress := false
 
-	madeProgress = a.processMsgRsp() || madeProgress
+	madeProgress = a.processMsgRsp(now) || madeProgress
 
 	if a.ReadLeft == 0 && a.WriteLeft == 0 {
 		return madeProgress
 	}
 
 	if a.shouldRead() {
-		madeProgress = a.doRead() || madeProgress
+		madeProgress = a.doRead(now) || madeProgress
 	} else {
-		madeProgress = a.doWrite() || madeProgress
+		madeProgress = a.doWrite(now) || madeProgress
 	}
 
 	return madeProgress
 }
 
-func (a *MemAccessAgent) processMsgRsp() bool {
-	msg := a.memPort.RetrieveIncoming()
+func (a *MemAccessAgent) processMsgRsp(now sim.VTimeInSec) bool {
+	msg := a.memPort.Retrieve(now)
 	if msg == nil {
 		return false
 	}
@@ -87,12 +82,10 @@ func (a *MemAccessAgent) processMsgRsp() bool {
 	case *mem.WriteDoneRsp:
 		if dumpLog {
 			write := a.PendingWriteReq[msg.RespondTo]
-			log.Printf("%.10f, agent, write complete, 0x%X\n",
-				a.CurrentTime(), write.Address)
+			log.Printf("%.10f, agent, write complete, 0x%X\n", now, write.Address)
 		}
 
 		delete(a.PendingWriteReq, msg.RespondTo)
-
 		return true
 	case *mem.DataReadyRsp:
 		req := a.PendingReadReq[msg.RespondTo]
@@ -100,11 +93,10 @@ func (a *MemAccessAgent) processMsgRsp() bool {
 
 		if dumpLog {
 			log.Printf("%.10f, agent, read complete, 0x%X, %v\n",
-				a.CurrentTime(), req.Address, msg.Data)
+				now, req.Address, msg.Data)
 		}
 
 		a.checkReadResult(req, msg)
-
 		return true
 	default:
 		log.Panicf("cannot process message of type %s", reflect.TypeOf(msg))
@@ -127,11 +119,10 @@ func (a *MemAccessAgent) shouldRead() bool {
 	}
 
 	dice := rand.Float64()
-
 	return dice > 0.5
 }
 
-func (a *MemAccessAgent) doRead() bool {
+func (a *MemAccessAgent) doRead(now sim.VTimeInSec) bool {
 	address := a.randomReadAddress()
 
 	if a.isAddressInPendingReq(address) {
@@ -139,12 +130,13 @@ func (a *MemAccessAgent) doRead() bool {
 	}
 
 	readReq := mem.ReadReqBuilder{}.
-		WithSrc(a.memPort.AsRemote()).
-		WithDst(a.LowModule.AsRemote()).
+		WithSrc(a.memPort).
+		WithDst(a.LowModule).
 		WithAddress(address).
 		WithByteSize(4).
 		WithPID(1).
 		Build()
+	readReq.SendTime = now
 
 	err := a.memPort.Send(readReq)
 	if err == nil {
@@ -152,12 +144,10 @@ func (a *MemAccessAgent) doRead() bool {
 		a.ReadLeft--
 
 		if dumpLog {
-			log.Printf("%.10f, agent, read, 0x%X\n", a.CurrentTime(), address)
+			log.Printf("%.10f, agent, read, 0x%X\n", now, address)
 		}
-
 		return true
 	}
-
 	return false
 }
 
@@ -182,7 +172,6 @@ func (a *MemAccessAgent) isAddressInPendingWrite(addr uint64) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -192,14 +181,12 @@ func (a *MemAccessAgent) isAddressInPendingRead(addr uint64) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
 func uint32ToBytes(data uint32) []byte {
 	bytes := make([]byte, 4)
 	binary.LittleEndian.PutUint32(bytes, data)
-
 	return bytes
 }
 
@@ -209,11 +196,10 @@ func bytesToUint32(data []byte) uint32 {
 	a += uint32(data[1]) << 8
 	a += uint32(data[2]) << 16
 	a += uint32(data[3]) << 24
-
 	return a
 }
 
-func (a *MemAccessAgent) doWrite() bool {
+func (a *MemAccessAgent) doWrite(now sim.VTimeInSec) bool {
 	address := rand.Uint64() % (a.MaxAddress / 4) * 4
 	data := rand.Uint32()
 
@@ -222,12 +208,13 @@ func (a *MemAccessAgent) doWrite() bool {
 	}
 
 	writeReq := mem.WriteReqBuilder{}.
-		WithSrc(a.memPort.AsRemote()).
-		WithDst(a.LowModule.AsRemote()).
+		WithSrc(a.memPort).
+		WithDst(a.LowModule).
 		WithAddress(address).
 		WithPID(1).
 		WithData(uint32ToBytes(data)).
 		Build()
+	writeReq.SendTime = now
 
 	err := a.memPort.Send(writeReq)
 	if err == nil {
@@ -237,12 +224,11 @@ func (a *MemAccessAgent) doWrite() bool {
 
 		if dumpLog {
 			log.Printf("%.10f, agent, write, 0x%X, %v\n",
-				a.CurrentTime(), address, writeReq.Data)
+				now, address, writeReq.Data)
 		}
 
 		return true
 	}
-
 	return false
 }
 
@@ -252,7 +238,6 @@ func (a *MemAccessAgent) addKnownValue(address uint64, data uint32) {
 		valueList = make([]uint32, 0)
 		a.KnownMemValue[address] = valueList
 	}
-
 	valueList = append(valueList, data)
 	a.KnownMemValue[address] = valueList
 }
@@ -263,7 +248,7 @@ func NewMemAccessAgent(engine sim.Engine) *MemAccessAgent {
 	agent.TickingComponent = sim.NewTickingComponent(
 		"Agent", engine, 1*sim.GHz, agent)
 
-	agent.memPort = sim.NewPort(agent, 1, 1, "Agent.MemPort")
+	agent.memPort = sim.NewLimitNumMsgPort(agent, 1, "Agent.MemPort")
 	agent.AddPort("Mem", agent.memPort)
 
 	agent.ReadLeft = 10000

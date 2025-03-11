@@ -4,8 +4,9 @@ import (
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/addressmapping"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/signal"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/addressmapping"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/signal"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 var _ = Describe("CommandQueueImpl", func() {
@@ -62,13 +63,13 @@ var _ = Describe("CommandQueueImpl", func() {
 		q.Queues[1] = append(q.Queues[1], cmd3)
 
 		channel.EXPECT().
-			GetReadyCommand(cmd1).
+			GetReadyCommand(sim.VTimeInSec(10), cmd1).
 			Return(nil)
 		channel.EXPECT().
-			GetReadyCommand(cmd2).
+			GetReadyCommand(sim.VTimeInSec(10), cmd2).
 			Return(cmd2)
 
-		readyCmd := q.GetCommandToIssue()
+		readyCmd := q.GetCommandToIssue(10)
 
 		Expect(readyCmd).To(BeIdenticalTo(cmd2))
 		Expect(q.Queues[0]).NotTo(ContainElement(cmd2))

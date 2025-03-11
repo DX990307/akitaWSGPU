@@ -20,6 +20,8 @@ type SerialEngine struct {
 	pauseLock    sync.Mutex
 
 	singleRunLock sync.Mutex
+
+	simulationEndHandlers []SimulationEndHandler
 }
 
 // NewSerialEngine creates a SerialEngine
@@ -42,7 +44,6 @@ func (e *SerialEngine) Schedule(evt Event) {
 
 	if evt.IsSecondary() {
 		e.secondaryQueue.Push(evt)
-
 		return
 	}
 
@@ -53,7 +54,6 @@ func (e *SerialEngine) readNow() VTimeInSec {
 	e.timeLock.RLock()
 	t := e.time
 	e.timeLock.RUnlock()
-
 	return t
 }
 
@@ -77,14 +77,12 @@ func (e *SerialEngine) Run() error {
 
 		evt := e.nextEvent()
 		now := e.readNow()
-
 		if evt.Time() < now {
 			log.Panicf(
 				"cannot run event in the past, evt %s @ %.10f, now %.10f",
 				reflect.TypeOf(evt), evt.Time(), now,
 			)
 		}
-
 		e.writeNow(evt.Time())
 
 		hookCtx := HookCtx{
@@ -126,7 +124,6 @@ func (e *SerialEngine) nextEvent() Event {
 	}
 
 	e.secondaryQueue.Pop()
-
 	return secondaryEvt
 }
 
@@ -160,4 +157,21 @@ func (e *SerialEngine) Continue() {
 // Specifically, the run time of the current event.
 func (e *SerialEngine) CurrentTime() VTimeInSec {
 	return e.readNow()
+}
+
+// RegisterSimulationEndHandler invokes all the registered simulation end
+// handler.
+func (e *SerialEngine) RegisterSimulationEndHandler(
+	handler SimulationEndHandler,
+) {
+	e.simulationEndHandlers = append(e.simulationEndHandlers, handler)
+}
+
+// Finished should be called after the simulation ends. This function
+// calls all the registered SimulationEndHandler.
+func (e *SerialEngine) Finished() {
+	now := e.readNow()
+	for _, h := range e.simulationEndHandlers {
+		h.Handle(now)
+	}
 }

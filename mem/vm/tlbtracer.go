@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // A TLBTracer write logs for what happened in a TLB
@@ -18,7 +18,6 @@ func NewTLBTracer(w io.Writer, timeTeller sim.TimeTeller) *TLBTracer {
 	t := new(TLBTracer)
 	t.writer = w
 	t.timeTeller = timeTeller
-
 	return t
 }
 

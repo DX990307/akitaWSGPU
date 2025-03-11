@@ -2,15 +2,18 @@
 package vm
 
 import (
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // A TranslationReq asks the receiver component to translate the request.
 type TranslationReq struct {
 	sim.MsgMeta
-	VAddr    uint64
-	PID      PID
-	DeviceID uint64
+	VAddr      uint64
+	PID        PID
+	TaskID     string
+	DeviceID   uint64
+	OriginPort sim.Port
+	Translate  bool
 }
 
 // Meta returns the meta data associated with the message.
@@ -18,46 +21,47 @@ func (r *TranslationReq) Meta() *sim.MsgMeta {
 	return &r.MsgMeta
 }
 
-// Clone returns cloned TranslationReq with different ID
-func (r *TranslationReq) Clone() sim.Msg {
-	cloneMsg := *r
-	cloneMsg.ID = sim.GetIDGenerator().Generate()
-
-	return &cloneMsg
-}
-
-// GenerateRsp generates response to original translation request
-func (r *TranslationReq) GenerateRsp(page Page) sim.Rsp {
-	rsp := TranslationRspBuilder{}.
-		WithSrc(r.Dst).
-		WithDst(r.Src).
-		WithRspTo(r.ID).
-		WithPage(page).
-		Build()
-
-	return rsp
-}
-
 // TranslationReqBuilder can build translation requests
 type TranslationReqBuilder struct {
-	src, dst sim.RemotePort
-	vAddr    uint64
-	pid      PID
-	deviceID uint64
+	sendTime  sim.VTimeInSec
+	src, dst  sim.Port
+	vAddr     uint64
+	pid       PID
+	taskID    string
+	deviceID  uint64
+	origPort  sim.Port
+	translate bool
+}
+
+// WithTranslate sets the translate flag of the request to build.
+func (b TranslationReqBuilder) WithTranslate(
+	translate bool,
+) TranslationReqBuilder {
+	b.translate = translate
+	return b
+}
+
+func (b TranslationReqBuilder) WithOriginPort(port sim.Port) TranslationReqBuilder {
+	b.origPort = port
+	return b
+}
+
+// WithSendTime sets the send time of the request to build.:w
+func (b TranslationReqBuilder) WithSendTime(
+	t sim.VTimeInSec,
+) TranslationReqBuilder {
+	b.sendTime = t
+	return b
 }
 
 // WithSrc sets the source of the request to build.
-func (b TranslationReqBuilder) WithSrc(
-	src sim.RemotePort,
-) TranslationReqBuilder {
+func (b TranslationReqBuilder) WithSrc(src sim.Port) TranslationReqBuilder {
 	b.src = src
 	return b
 }
 
 // WithDst sets the destination of the request to build.
-func (b TranslationReqBuilder) WithDst(
-	dst sim.RemotePort,
-) TranslationReqBuilder {
+func (b TranslationReqBuilder) WithDst(dst sim.Port) TranslationReqBuilder {
 	b.dst = dst
 	return b
 }
@@ -75,10 +79,13 @@ func (b TranslationReqBuilder) WithPID(pid PID) TranslationReqBuilder {
 }
 
 // WithDeviceID sets the GPU ID of the request to build.
-func (b TranslationReqBuilder) WithDeviceID(
-	deviceID uint64,
-) TranslationReqBuilder {
+func (b TranslationReqBuilder) WithDeviceID(deviceID uint64) TranslationReqBuilder {
 	b.deviceID = deviceID
+	return b
+}
+
+func (b TranslationReqBuilder) WithTaskID(taskID string) TranslationReqBuilder {
+	b.taskID = taskID
 	return b
 }
 
@@ -88,10 +95,13 @@ func (b TranslationReqBuilder) Build() *TranslationReq {
 	r.ID = sim.GetIDGenerator().Generate()
 	r.Src = b.src
 	r.Dst = b.dst
+	r.SendTime = b.sendTime
 	r.VAddr = b.vAddr
 	r.PID = b.pid
+	r.TaskID = b.taskID
 	r.DeviceID = b.deviceID
-
+	r.OriginPort = b.origPort
+	r.Translate = b.translate
 	return r
 }
 
@@ -99,21 +109,15 @@ func (b TranslationReqBuilder) Build() *TranslationReq {
 // address.
 type TranslationRsp struct {
 	sim.MsgMeta
-	RespondTo string // The ID of the request it replies
-	Page      Page
+	RespondTo  string // The ID of the request it replies
+	Page       Page
+	TaskID     string
+	OriginPort sim.Port
 }
 
 // Meta returns the meta data associated with the message.
 func (r *TranslationRsp) Meta() *sim.MsgMeta {
 	return &r.MsgMeta
-}
-
-// Clone returns cloned TranslationRsp with different ID
-func (r *TranslationRsp) Clone() sim.Msg {
-	cloneMsg := *r
-	cloneMsg.ID = sim.GetIDGenerator().Generate()
-
-	return &cloneMsg
 }
 
 // GetRspTo returns the request ID that the respond is responding to.
@@ -123,23 +127,36 @@ func (r *TranslationRsp) GetRspTo() string {
 
 // TranslationRspBuilder can build translation requests
 type TranslationRspBuilder struct {
-	src, dst sim.RemotePort
+	sendTime sim.VTimeInSec
+	src, dst sim.Port
 	rspTo    string
 	page     Page
+	taskID   string
+	origPort sim.Port
+}
+
+// WithOriginPort sets the origin port of the respond to build.
+func (b TranslationRspBuilder) WithOriginPort(port sim.Port) TranslationRspBuilder {
+	b.origPort = port
+	return b
+}
+
+// WithSendTime sets the send time of the message to build.
+func (b TranslationRspBuilder) WithSendTime(
+	t sim.VTimeInSec,
+) TranslationRspBuilder {
+	b.sendTime = t
+	return b
 }
 
 // WithSrc sets the source of the respond to build.
-func (b TranslationRspBuilder) WithSrc(
-	src sim.RemotePort,
-) TranslationRspBuilder {
+func (b TranslationRspBuilder) WithSrc(src sim.Port) TranslationRspBuilder {
 	b.src = src
 	return b
 }
 
 // WithDst sets the destination of the respond to build.
-func (b TranslationRspBuilder) WithDst(
-	dst sim.RemotePort,
-) TranslationRspBuilder {
+func (b TranslationRspBuilder) WithDst(dst sim.Port) TranslationRspBuilder {
 	b.dst = dst
 	return b
 }
@@ -156,15 +173,22 @@ func (b TranslationRspBuilder) WithPage(page Page) TranslationRspBuilder {
 	return b
 }
 
+func (b TranslationRspBuilder) WithTaskID(taskID string) TranslationRspBuilder {
+	b.taskID = taskID
+	return b
+}
+
 // Build creates a new TranslationRsp
 func (b TranslationRspBuilder) Build() *TranslationRsp {
 	r := &TranslationRsp{}
 	r.ID = sim.GetIDGenerator().Generate()
 	r.Src = b.src
 	r.Dst = b.dst
+	r.SendTime = b.sendTime
 	r.RespondTo = b.rspTo
 	r.Page = b.page
-
+	r.TaskID = b.taskID
+	r.OriginPort = b.origPort
 	return r
 }
 
@@ -174,8 +198,7 @@ type PageMigrationInfo struct {
 	GPUReqToVAddrMap map[uint64][]uint64
 }
 
-// PageMigrationReqToDriver is a req to driver from MMU to start page migration
-// process
+// PageMigrationReqToDriver is a req to driver from MMU to start page migration process
 type PageMigrationReqToDriver struct {
 	sim.MsgMeta
 
@@ -194,30 +217,19 @@ func (m *PageMigrationReqToDriver) Meta() *sim.MsgMeta {
 	return &m.MsgMeta
 }
 
-// Clone returns cloned PageMigrationReqToDriver with different ID
-func (m *PageMigrationReqToDriver) Clone() sim.Msg {
-	return m
-}
-
-func (m *PageMigrationReqToDriver) GenerateRsp() sim.Rsp {
-	rsp := NewPageMigrationRspFromDriver(m.Dst, m.Src, m)
-
-	return rsp
-}
-
 // NewPageMigrationReqToDriver creates a PageMigrationReqToDriver.
 func NewPageMigrationReqToDriver(
-	src, dst sim.RemotePort,
+	time sim.VTimeInSec,
+	src, dst sim.Port,
 ) *PageMigrationReqToDriver {
 	cmd := new(PageMigrationReqToDriver)
+	cmd.SendTime = time
 	cmd.Src = src
 	cmd.Dst = dst
-
 	return cmd
 }
 
-// PageMigrationRspFromDriver is a rsp from driver to MMU marking completion of
-// migration
+// PageMigrationRspFromDriver is a rsp from driver to MMU marking completion of migration
 type PageMigrationRspFromDriver struct {
 	sim.MsgMeta
 
@@ -225,8 +237,6 @@ type PageMigrationRspFromDriver struct {
 	EndTime   sim.VTimeInSec
 	VAddr     []uint64
 	RspToTop  bool
-
-	OriginalReq sim.Msg
 }
 
 // Meta returns the meta data associated with the message.
@@ -234,24 +244,103 @@ func (m *PageMigrationRspFromDriver) Meta() *sim.MsgMeta {
 	return &m.MsgMeta
 }
 
-// Clone returns cloned PageMigrationRspFromDriver with different ID
-func (m *PageMigrationRspFromDriver) Clone() sim.Msg {
-	return m
-}
-
-func (m *PageMigrationRspFromDriver) GetRspTo() string {
-	return m.OriginalReq.Meta().ID
-}
-
 // NewPageMigrationRspFromDriver creates a new PageMigrationRspFromDriver.
 func NewPageMigrationRspFromDriver(
-	src, dst sim.RemotePort,
-	originalReq sim.Msg,
+	time sim.VTimeInSec,
+	src, dst sim.Port,
 ) *PageMigrationRspFromDriver {
 	cmd := new(PageMigrationRspFromDriver)
+	cmd.SendTime = time
 	cmd.Src = src
 	cmd.Dst = dst
-	cmd.OriginalReq = originalReq
-
 	return cmd
+}
+
+type RemoveMSHRReq struct {
+	sim.MsgMeta
+	VAddr      uint64
+	PID        PID
+	TaskID     string
+	DeviceID   uint64
+	OriginPort sim.Port
+	Translate  bool
+}
+
+func (r *RemoveMSHRReq) Meta() *sim.MsgMeta {
+	return &r.MsgMeta
+}
+
+type RemoveMSHRReqBuilder struct {
+	sendTime  sim.VTimeInSec
+	src, dst  sim.Port
+	vAddr     uint64
+	pid       PID
+	taskID    string
+	deviceID  uint64
+	origPort  sim.Port
+	translate bool
+}
+
+func (b RemoveMSHRReqBuilder) WithTranslate(
+	translate bool,
+) RemoveMSHRReqBuilder {
+	b.translate = translate
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) WithOriginPort(port sim.Port) RemoveMSHRReqBuilder {
+	b.origPort = port
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) WithSendTime(
+	t sim.VTimeInSec,
+) RemoveMSHRReqBuilder {
+	b.sendTime = t
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) WithSrc(src sim.Port) RemoveMSHRReqBuilder {
+	b.src = src
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) WithDst(dst sim.Port) RemoveMSHRReqBuilder {
+	b.dst = dst
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) WithVAddr(vAddr uint64) RemoveMSHRReqBuilder {
+	b.vAddr = vAddr
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) WithPID(pid PID) RemoveMSHRReqBuilder {
+	b.pid = pid
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) WithDeviceID(deviceID uint64) RemoveMSHRReqBuilder {
+	b.deviceID = deviceID
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) WithTaskID(taskID string) RemoveMSHRReqBuilder {
+	b.taskID = taskID
+	return b
+}
+
+func (b RemoveMSHRReqBuilder) Build() *RemoveMSHRReq {
+	r := &RemoveMSHRReq{}
+	r.ID = sim.GetIDGenerator().Generate()
+	r.Src = b.src
+	r.Dst = b.dst
+	r.SendTime = b.sendTime
+	r.VAddr = b.vAddr
+	r.PID = b.pid
+	r.TaskID = b.taskID
+	r.DeviceID = b.deviceID
+	r.OriginPort = b.origPort
+	r.Translate = b.translate
+	return r
 }

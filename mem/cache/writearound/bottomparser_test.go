@@ -4,10 +4,10 @@ import (
 	gomock "github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/mem/vm"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/mem/vm"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 var _ = Describe("Bottom Parser", func() {
@@ -17,7 +17,7 @@ var _ = Describe("Bottom Parser", func() {
 		bankBuf    *MockBuffer
 		mshr       *MockMSHR
 		p          *bottomParser
-		c          *Comp
+		c          *Cache
 	)
 
 	BeforeEach(func() {
@@ -25,7 +25,7 @@ var _ = Describe("Bottom Parser", func() {
 		bottomPort = NewMockPort(mockCtrl)
 		bankBuf = NewMockBuffer(mockCtrl)
 		mshr = NewMockMSHR(mockCtrl)
-		c = &Comp{
+		c = &Cache{
 			log2BlockSize:    6,
 			bottomPort:       bottomPort,
 			mshr:             mshr,
@@ -42,14 +42,15 @@ var _ = Describe("Bottom Parser", func() {
 	})
 
 	It("should do nothing if no respond", func() {
-		bottomPort.EXPECT().PeekIncoming().Return(nil)
-		madeProgress := p.Tick()
+		bottomPort.EXPECT().Peek().Return(nil)
+		madeProgress := p.Tick(12)
 		Expect(madeProgress).To(BeFalse())
 	})
 
 	Context("write done", func() {
 		It("should handle write done", func() {
 			write1 := mem.WriteReqBuilder{}.
+				WithSendTime(4).
 				WithAddress(0x100).
 				WithPID(1).
 				Build()
@@ -57,6 +58,7 @@ var _ = Describe("Bottom Parser", func() {
 				write: write1,
 			}
 			write2 := mem.WriteReqBuilder{}.
+				WithSendTime(4).
 				WithAddress(0x104).
 				WithPID(1).
 				Build()
@@ -64,6 +66,7 @@ var _ = Describe("Bottom Parser", func() {
 				write: write2,
 			}
 			writeToBottom := mem.WriteReqBuilder{}.
+				WithSendTime(4).
 				WithAddress(0x100).
 				WithPID(1).
 				Build()
@@ -74,13 +77,14 @@ var _ = Describe("Bottom Parser", func() {
 			c.postCoalesceTransactions = append(
 				c.postCoalesceTransactions, postCTrans)
 			done := mem.WriteDoneRspBuilder{}.
+				WithSendTime(11).
 				WithRspTo(writeToBottom.ID).
 				Build()
 
-			bottomPort.EXPECT().PeekIncoming().Return(done)
-			bottomPort.EXPECT().RetrieveIncoming()
+			bottomPort.EXPECT().Peek().Return(done)
+			bottomPort.EXPECT().Retrieve(gomock.Any())
 
-			madeProgress := p.Tick()
+			madeProgress := p.Tick(12)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(preCTrans1.done).To(BeTrue())
@@ -106,21 +110,25 @@ var _ = Describe("Bottom Parser", func() {
 
 		BeforeEach(func() {
 			read1 = mem.ReadReqBuilder{}.
+				WithSendTime(1).
 				WithAddress(0x100).
 				WithPID(1).
 				WithByteSize(4).
 				Build()
 			read2 = mem.ReadReqBuilder{}.
+				WithSendTime(1).
 				WithAddress(0x104).
 				WithPID(1).
 				WithByteSize(4).
 				Build()
 			write1 = mem.WriteReqBuilder{}.
+				WithSendTime(1).
 				WithAddress(0x108).
 				WithPID(1).
 				WithData([]byte{9, 9, 9, 9}).
 				Build()
 			write2 = mem.WriteReqBuilder{}.
+				WithSendTime(1).
 				WithAddress(0x10C).
 				WithPID(1).
 				WithData([]byte{9, 9, 9, 9}).
@@ -132,17 +140,20 @@ var _ = Describe("Bottom Parser", func() {
 			preCTrans4 = &transaction{write: write2}
 
 			postCRead = mem.ReadReqBuilder{}.
+				WithSendTime(0).
 				WithAddress(0x100).
 				WithPID(1).
 				WithByteSize(64).
 				Build()
 			readToBottom = mem.ReadReqBuilder{}.
+				WithSendTime(2).
 				WithAddress(0x100).
 				WithPID(1).
 				WithByteSize(64).
 				Build()
 
 			dataReady = mem.DataReadyRspBuilder{}.
+				WithSendTime(4).
 				WithRspTo(readToBottom.ID).
 				WithData([]byte{
 					1, 2, 3, 4, 5, 6, 7, 8,
@@ -168,10 +179,10 @@ var _ = Describe("Bottom Parser", func() {
 					preCTrans2,
 				},
 			}
-			c.postCoalesceTransactions = append(
-				c.postCoalesceTransactions, postCTrans1)
+			c.postCoalesceTransactions = append(c.postCoalesceTransactions, postCTrans1)
 
 			postCWrite = mem.WriteReqBuilder{}.
+				WithSendTime(1).
 				WithAddress(0x100).
 				WithPID(1).
 				WithData([]byte{
@@ -197,17 +208,17 @@ var _ = Describe("Bottom Parser", func() {
 		})
 
 		It("should stall is bank is busy", func() {
-			bottomPort.EXPECT().PeekIncoming().Return(dataReady)
+			bottomPort.EXPECT().Peek().Return(dataReady)
 			bankBuf.EXPECT().CanPush().Return(false)
 
-			madeProgress := p.Tick()
+			madeProgress := p.Tick(12)
 
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should send transaction to bank", func() {
-			bottomPort.EXPECT().PeekIncoming().Return(dataReady)
-			bottomPort.EXPECT().RetrieveIncoming()
+			bottomPort.EXPECT().Peek().Return(dataReady)
+			bottomPort.EXPECT().Retrieve(gomock.Any())
 			mshr.EXPECT().Query(vm.PID(1), uint64(0x100)).Return(mshrEntry)
 			mshr.EXPECT().Remove(vm.PID(1), uint64(0x100))
 			bankBuf.EXPECT().CanPush().Return(true)
@@ -216,24 +227,22 @@ var _ = Describe("Bottom Parser", func() {
 					Expect(trans.bankAction).To(Equal(bankActionWriteFetched))
 				})
 
-			madeProgress := p.Tick()
+			madeProgress := p.Tick(12)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(preCTrans1.done).To(BeTrue())
 			Expect(preCTrans1.data).To(Equal([]byte{1, 2, 3, 4}))
 			Expect(preCTrans2.done).To(BeTrue())
 			Expect(preCTrans2.data).To(Equal([]byte{5, 6, 7, 8}))
-			Expect(c.postCoalesceTransactions).
-				NotTo(ContainElement(postCTrans1))
+			Expect(c.postCoalesceTransactions).NotTo(ContainElement(postCTrans1))
 		})
 
 		It("should combine write", func() {
 			mshrEntry.Requests = append(mshrEntry.Requests, postCTrans2)
-			c.postCoalesceTransactions = append(
-				c.postCoalesceTransactions, postCTrans2)
+			c.postCoalesceTransactions = append(c.postCoalesceTransactions, postCTrans2)
 
-			bottomPort.EXPECT().PeekIncoming().Return(dataReady)
-			bottomPort.EXPECT().RetrieveIncoming()
+			bottomPort.EXPECT().Peek().Return(dataReady)
+			bottomPort.EXPECT().Retrieve(gomock.Any())
 			mshr.EXPECT().Query(vm.PID(1), uint64(0x100)).Return(mshrEntry)
 			mshr.EXPECT().Remove(vm.PID(1), uint64(0x100))
 			bankBuf.EXPECT().CanPush().Return(true)
@@ -262,7 +271,7 @@ var _ = Describe("Bottom Parser", func() {
 					}))
 				})
 
-			madeProgress := p.Tick()
+			madeProgress := p.Tick(12)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(preCTrans1.done).To(BeTrue())
@@ -271,10 +280,8 @@ var _ = Describe("Bottom Parser", func() {
 			Expect(preCTrans2.data).To(Equal([]byte{5, 6, 7, 8}))
 			Expect(preCTrans3.done).To(BeTrue())
 			Expect(preCTrans4.done).To(BeTrue())
-			Expect(c.postCoalesceTransactions).
-				NotTo(ContainElement(postCTrans1))
-			Expect(c.postCoalesceTransactions).
-				NotTo(ContainElement(postCTrans2))
+			Expect(c.postCoalesceTransactions).NotTo(ContainElement(postCTrans1))
+			Expect(c.postCoalesceTransactions).NotTo(ContainElement(postCTrans2))
 		})
 	})
 

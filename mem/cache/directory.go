@@ -1,8 +1,8 @@
 package cache
 
 import (
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/mem/vm"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/mem/vm"
 )
 
 // A Block of a cache is the information that is associated with a cache line
@@ -82,7 +82,6 @@ func (d *DirectoryImpl) getSet(reqAddr uint64) (set *Set, setID int) {
 
 	setID = int(reqAddr / uint64(d.BlockSize) % uint64(d.NumSets))
 	set = &d.Sets[setID]
-
 	return
 }
 
@@ -95,7 +94,6 @@ func (d *DirectoryImpl) Lookup(PID vm.PID, reqAddr uint64) *Block {
 			return block
 		}
 	}
-
 	return nil
 }
 
@@ -106,21 +104,18 @@ func (d *DirectoryImpl) Lookup(PID vm.PID, reqAddr uint64) *Block {
 func (d *DirectoryImpl) FindVictim(addr uint64) *Block {
 	set, _ := d.getSet(addr)
 	block := d.victimFinder.FindVictim(set)
-
 	return block
 }
 
 // Visit moves the block to the end of the LRUQueue
 func (d *DirectoryImpl) Visit(block *Block) {
 	set := d.Sets[block.SetID]
-
 	for i, b := range set.LRUQueue {
 		if b == block {
 			set.LRUQueue = append(set.LRUQueue[:i], set.LRUQueue[i+1:]...)
 			break
 		}
 	}
-
 	set.LRUQueue = append(set.LRUQueue, block)
 }
 

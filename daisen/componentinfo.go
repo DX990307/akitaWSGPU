@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 type TimeValue struct {
@@ -47,7 +47,6 @@ func httpComponentInfo(w http.ResponseWriter, r *http.Request) {
 	dieOnErr(err)
 
 	var compInfo *ComponentInfo
-
 	switch infoType {
 	case "ReqInCount":
 		compInfo = calculateReqIn(
@@ -59,14 +58,33 @@ func httpComponentInfo(w http.ResponseWriter, r *http.Request) {
 		compInfo = calculateAvgLatency(
 			compName, startTime, endTime, int(numDots))
 	case "ConcurrentTask":
-		compInfo = calculateConcurrentTask(
-			compInfo, compName, infoType, startTime, endTime, numDots)
+		compInfo = calculateTimeWeightedTaskCount(
+			compName, infoType,
+			startTime, endTime, int(numDots),
+			func(t tracing.Task) bool { return true },
+			func(t tracing.Task) float64 { return float64(t.StartTime) },
+			func(t tracing.Task) float64 { return float64(t.EndTime) },
+		)
 	case "BufferPressure":
-		compInfo = calculateBufferPressure(
-			compInfo, compName, infoType, startTime, endTime, numDots)
+		compInfo = calculateTimeWeightedTaskCount(
+			compName, infoType,
+			startTime, endTime, int(numDots),
+			taskIsReqIn,
+			func(t tracing.Task) float64 {
+				return float64(t.ParentTask.StartTime)
+			},
+			func(t tracing.Task) float64 {
+				return float64(t.StartTime)
+			},
+		)
 	case "PendingReqOut":
-		compInfo = calculatePendingReqOut(
-			compInfo, compName, infoType, startTime, endTime, numDots)
+		compInfo = calculateTimeWeightedTaskCount(
+			compName, infoType,
+			startTime, endTime, int(numDots),
+			func(t tracing.Task) bool { return t.Kind == "req_out" },
+			func(t tracing.Task) float64 { return float64(t.StartTime) },
+			func(t tracing.Task) float64 { return float64(t.EndTime) },
+		)
 	default:
 		log.Panicf("unknown info_type %s\n", infoType)
 	}
@@ -76,61 +94,6 @@ func httpComponentInfo(w http.ResponseWriter, r *http.Request) {
 
 	_, err = w.Write(rsp)
 	dieOnErr(err)
-}
-
-func calculateConcurrentTask(
-	compInfo *ComponentInfo,
-	compName, infoType string,
-	startTime, endTime float64,
-	numDots int64,
-) *ComponentInfo {
-	compInfo = calculateTimeWeightedTaskCount(
-		compName, infoType,
-		startTime, endTime, int(numDots),
-		func(t tracing.Task) bool { return true },
-		func(t tracing.Task) float64 { return float64(t.StartTime) },
-		func(t tracing.Task) float64 { return float64(t.EndTime) },
-	)
-
-	return compInfo
-}
-
-func calculateBufferPressure(
-	compInfo *ComponentInfo,
-	compName, infoType string,
-	startTime, endTime float64,
-	numDots int64,
-) *ComponentInfo {
-	compInfo = calculateTimeWeightedTaskCount(
-		compName, infoType,
-		startTime, endTime, int(numDots),
-		taskIsReqIn,
-		func(t tracing.Task) float64 {
-			return float64(t.ParentTask.StartTime)
-		},
-		func(t tracing.Task) float64 {
-			return float64(t.StartTime)
-		},
-	)
-
-	return compInfo
-}
-
-func calculatePendingReqOut(
-	compInfo *ComponentInfo,
-	compName, infoType string,
-	startTime, endTime float64,
-	numDots int64,
-) *ComponentInfo {
-	compInfo = calculateTimeWeightedTaskCount(
-		compName, infoType,
-		startTime, endTime, int(numDots),
-		func(t tracing.Task) bool { return t.Kind == "req_out" },
-		func(t tracing.Task) float64 { return float64(t.StartTime) },
-		func(t tracing.Task) float64 { return float64(t.EndTime) },
-	)
-
-	return compInfo
 }
 
 func taskIsReqIn(t tracing.Task) bool {
@@ -161,13 +124,11 @@ func calculateReqIn(
 
 	totalDuration := endTime - startTime
 	binDuration := totalDuration / float64(numDots)
-
 	for i := 0; i < numDots; i++ {
 		binStartTime := float64(i)*binDuration + startTime
 		binEndTime := float64(i+1)*binDuration + startTime
 
 		reqCount := 0
-
 		for _, r := range reqs {
 			if float64(r.StartTime) > binStartTime &&
 				float64(r.StartTime) < binEndTime {
@@ -210,13 +171,11 @@ func calculateReqComplete(
 
 	totalDuration := endTime - startTime
 	binDuration := totalDuration / float64(numDots)
-
 	for i := 0; i < numDots; i++ {
 		binStartTime := float64(i)*binDuration + startTime
 		binEndTime := float64(i+1)*binDuration + startTime
 
 		reqCount := 0
-
 		for _, r := range reqs {
 			if float64(r.EndTime) > binStartTime &&
 				float64(r.EndTime) < binEndTime {
@@ -259,14 +218,12 @@ func calculateAvgLatency(
 
 	totalDuration := endTime - startTime
 	binDuration := totalDuration / float64(numDots)
-
 	for i := 0; i < numDots; i++ {
 		binStartTime := float64(i)*binDuration + startTime
 		binEndTime := float64(i+1)*binDuration + startTime
 
 		sum := 0.0
 		reqCount := 0
-
 		for _, r := range reqs {
 			if float64(r.EndTime) > binStartTime &&
 				float64(r.EndTime) < binEndTime {
@@ -339,7 +296,6 @@ func calculateTimeWeightedTaskCount(
 
 	totalDuration := endTime - startTime
 	binDuration := totalDuration / float64(numDots)
-
 	for i := 0; i < numDots; i++ {
 		binStartTime := float64(i)*binDuration + startTime
 		binEndTime := float64(i+1)*binDuration + startTime
@@ -382,7 +338,6 @@ func calculateAvgTaskCount(
 ) float64 {
 	var count int
 	var timeByCount float64
-
 	prevTime := binStartTime
 
 	for _, ts := range timestamps {
@@ -392,7 +347,6 @@ func calculateAvgTaskCount(
 			} else {
 				count--
 			}
-
 			continue
 		} else if ts.time >= binEndTime {
 			break

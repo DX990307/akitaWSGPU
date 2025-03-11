@@ -3,11 +3,11 @@ package writearound
 import (
 	"fmt"
 
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/pipelining"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/pipelining"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 // A Builder can build an writearound cache
@@ -23,7 +23,7 @@ type Builder struct {
 	bankLatency           int
 	numReqPerCycle        int
 	maxNumConcurrentTrans int
-	addressToPortMapper   mem.AddressToPortMapper
+	lowModuleFinder       mem.LowModuleFinder
 	visTracer             tracing.Tracer
 }
 
@@ -119,39 +119,37 @@ func (b *Builder) WithVisTracer(tracer tracing.Tracer) *Builder {
 	return b
 }
 
-// WithAddressToPortMapper specifies how the cache units to create should find
-// low level modules.
-func (b *Builder) WithAddressToPortMapper(
-	addressToPortMapper mem.AddressToPortMapper,
+// WithLowModuleFinder specifies how the cache units to create should find low
+// level modules.
+func (b *Builder) WithLowModuleFinder(
+	lowModuleFinder mem.LowModuleFinder,
 ) *Builder {
-	b.addressToPortMapper = addressToPortMapper
+	b.lowModuleFinder = lowModuleFinder
 	return b
 }
 
 // Build returns a new cache unit
-func (b *Builder) Build(name string) *Comp {
+func (b *Builder) Build(name string) *Cache {
 	b.assertAllRequiredInformationIsAvailable()
 
-	c := &Comp{
+	c := &Cache{
 		log2BlockSize:  b.log2BlockSize,
 		numReqPerCycle: b.numReqPerCycle,
 	}
 	c.TickingComponent = sim.NewTickingComponent(
 		name, b.engine, b.freq, c)
 
-	c.topPort = sim.NewPort(c, b.numReqPerCycle, b.numReqPerCycle,
-		name+".TopPort")
+	c.topPort = sim.NewLimitNumMsgPort(c, b.numReqPerCycle, name+".TopPort")
 	c.AddPort("Top", c.topPort)
-	c.bottomPort = sim.NewPort(c, b.numReqPerCycle, b.numReqPerCycle,
+	c.bottomPort = sim.NewLimitNumMsgPort(c, b.numReqPerCycle,
 		name+".BottomPort")
 	c.AddPort("Bottom", c.bottomPort)
-	c.controlPort = sim.NewPort(c, b.numReqPerCycle, b.numReqPerCycle,
+	c.controlPort = sim.NewLimitNumMsgPort(c, b.numReqPerCycle,
 		name+".ControlPort")
 	c.AddPort("Control", c.controlPort)
 
 	c.dirBuf = sim.NewBuffer(name+".DirectoryBuffer", b.numReqPerCycle)
 	c.bankBufs = make([]sim.Buffer, b.numBank)
-
 	for i := 0; i < b.numBank; i++ {
 		c.bankBufs[i] = sim.NewBuffer(
 			fmt.Sprintf("%s.Bank%d.Buffer", name, i),
@@ -168,7 +166,7 @@ func (b *Builder) Build(name string) *Comp {
 	c.storage = mem.NewStorage(b.totalByteSize)
 	c.bankLatency = b.bankLatency
 	c.wayAssociativity = b.wayAssociativity
-	c.addressToPortMapper = b.addressToPortMapper
+	c.lowModuleFinder = b.lowModuleFinder
 	c.maxNumConcurrentTrans = b.maxNumConcurrentTrans
 
 	b.buildStages(c)
@@ -177,13 +175,10 @@ func (b *Builder) Build(name string) *Comp {
 		tracing.CollectTrace(c, b.visTracer)
 	}
 
-	middleware := &middleware{Comp: c}
-	c.AddMiddleware(middleware)
-
 	return c
 }
 
-func (b *Builder) buildStages(c *Comp) {
+func (b *Builder) buildStages(c *Cache) {
 	c.coalesceStage = &coalescer{cache: c}
 	b.buildDirStage(c)
 	b.buildBankStages(c)
@@ -200,7 +195,7 @@ func (b *Builder) buildStages(c *Comp) {
 	}
 }
 
-func (b *Builder) buildDirStage(c *Comp) {
+func (b *Builder) buildDirStage(c *Cache) {
 	buf := sim.NewBuffer(
 		c.Name()+".DirectoryStage.PostPipelineBuffer",
 		b.numReqPerCycle,
@@ -219,7 +214,7 @@ func (b *Builder) buildDirStage(c *Comp) {
 	}
 }
 
-func (b *Builder) buildBankStages(c *Comp) {
+func (b *Builder) buildBankStages(c *Cache) {
 	for i := 0; i < b.numBank; i++ {
 		pipelineName := fmt.Sprintf("%s.Bank[%d].Pipeline", c.Name(), i)
 		postPipelineBuf := sim.NewBuffer(

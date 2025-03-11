@@ -10,35 +10,23 @@ type sampleMsg struct {
 	MsgMeta
 }
 
-func NewSampleMsg() *sampleMsg {
-	m := &sampleMsg{}
-	return m
-}
-
 func (m *sampleMsg) Meta() *MsgMeta {
 	return &m.MsgMeta
 }
 
-func (m *sampleMsg) Clone() Msg {
-	cloneMsg := *m
-	cloneMsg.ID = GetIDGenerator().Generate()
-
-	return &cloneMsg
-}
-
-var _ = Describe("DefaultPort", func() {
+var _ = Describe("LimitNumMsgPort", func() {
 	var (
 		mockController *gomock.Controller
 		comp           *MockComponent
 		conn           *MockConnection
-		port           *defaultPort
+		port           *LimitNumMsgPort
 	)
 
 	BeforeEach(func() {
 		mockController = gomock.NewController(GinkgoT())
 		comp = NewMockComponent(mockController)
 		conn = NewMockConnection(mockController)
-		port = NewPort(comp, 4, 4, "Port").(*defaultPort)
+		port = NewLimitNumMsgPort(comp, 4, "Port")
 		port.SetConnection(conn)
 	})
 
@@ -58,138 +46,77 @@ var _ = Describe("DefaultPort", func() {
 		Expect(port.conn).To(BeIdenticalTo(conn))
 	})
 
-	It("should be panic if port is not msg src", func() {
-		msg := NewSampleMsg()
-
-		Expect(func() { port.Send(msg) }).To(Panic())
-	})
-
-	It("should be panic if msg dst is not set", func() {
-		msg := NewSampleMsg()
-		msg.Src = port.AsRemote()
-
-		Expect(func() { port.Send(msg) }).To(Panic())
-	})
-
-	It("should be panic if msg src is the same as dst", func() {
-		msg := NewSampleMsg()
-		msg.Src = port.AsRemote()
-		msg.Dst = port.AsRemote()
-
-		Expect(func() { port.Send(msg) }).To(Panic())
-	})
-
 	It("should send successfully", func() {
-		dst := NewPort(comp, 4, 4, "DstPort")
 		msg := &sampleMsg{}
-		msg.Src = port.AsRemote()
-		msg.Dst = dst.AsRemote()
-		conn.EXPECT().NotifySend()
+		conn.EXPECT().Send(msg).Return(nil)
 
 		err := port.Send(msg)
 
 		Expect(err).To(BeNil())
-		Expect(port.PeekOutgoing()).To(BeIdenticalTo(msg))
 	})
 
-	It("should propagate error when outgoing buff is full", func() {
-		dst := NewPort(comp, 4, 4, "DstPort")
+	It("should propagate error when sending is not successful", func() {
 		msg := &sampleMsg{}
-		msg.Src = port.AsRemote()
-		msg.Dst = dst.AsRemote()
-
-		port.outgoingBuf.Push(msg)
-		port.outgoingBuf.Push(msg)
-		port.outgoingBuf.Push(msg)
-		port.outgoingBuf.Push(msg)
+		err := &SendError{}
+		conn.EXPECT().Send(msg).Return(err)
 
 		errRet := port.Send(msg)
 
 		Expect(errRet).NotTo(BeNil())
 	})
 
-	It("should deliver when successful", func() {
+	It("should recv when successful", func() {
 		msg := &sampleMsg{}
+		msg.RecvTime = 10
 
-		comp.EXPECT().NotifyRecv(port)
+		comp.EXPECT().NotifyRecv(VTimeInSec(10), port)
 
-		errRet := port.Deliver(msg)
+		errRet := port.Recv(msg)
 
 		Expect(errRet).To(BeNil())
 	})
 
-	It("should fail to deliver when incoming buffer is full", func() {
+	It("should fail to receive when buffer is full", func() {
 		msg := &sampleMsg{}
-		port.incomingBuf = NewBuffer("Buf", 4)
-		port.incomingBuf.Push(msg)
-		port.incomingBuf.Push(msg)
-		port.incomingBuf.Push(msg)
-		port.incomingBuf.Push(msg)
+		msg.RecvTime = 10
+		port.buf = NewBuffer("Buf", 4)
+		port.buf.Push(msg)
+		port.buf.Push(msg)
+		port.buf.Push(msg)
+		port.buf.Push(msg)
 
-		errRet := port.Deliver(msg)
+		errRet := port.Recv(msg)
 
 		Expect(errRet).NotTo(BeNil())
 	})
 
-	It("should return nil when peeking empty incoming buffer", func() {
-		msg := port.PeekIncoming()
+	It("should return nil when peeking empty port", func() {
+		msg := port.Peek()
 
 		Expect(msg).To(BeNil())
 	})
 
-	It("should allow component to peek message from incoming buffer", func() {
+	It("should allow component to peek message", func() {
 		msg := &sampleMsg{}
-		port.incomingBuf.Push(msg)
+		port.buf.Push(msg)
 
-		msgRet := port.PeekIncoming()
+		msgRet := port.Peek()
 
 		Expect(msgRet).To(BeIdenticalTo(msg))
 	})
 
-	It("should return nil when peeking empty outgoing buffer", func() {
-		msg := port.PeekOutgoing()
+	It("should return nil when retrieving empty port", func() {
+		msg := port.Retrieve(10)
 
 		Expect(msg).To(BeNil())
 	})
 
-	It("should allow component to peek message from outgoing buffer", func() {
+	It("should allow component to retrieve message", func() {
 		msg := &sampleMsg{}
-		port.outgoingBuf.Push(msg)
+		port.buf.Push(msg)
 
-		msgRet := port.PeekOutgoing()
+		msgRet := port.Retrieve(10)
 
 		Expect(msgRet).To(BeIdenticalTo(msg))
 	})
-
-	It("should return nil when retrieving empty incoming buffer", func() {
-		msg := port.RetrieveIncoming()
-
-		Expect(msg).To(BeNil())
-	})
-
-	It("should allow component to retrieve message from incoming buffer",
-		func() {
-			msg := &sampleMsg{}
-			port.incomingBuf.Push(msg)
-
-			msgRet := port.RetrieveIncoming()
-
-			Expect(msgRet).To(BeIdenticalTo(msg))
-		})
-
-	It("should return nil when retrieving empty outgoing buffer", func() {
-		msg := port.RetrieveOutgoing()
-
-		Expect(msg).To(BeNil())
-	})
-
-	It("should allow component to retrieve message from outgoing buffer",
-		func() {
-			msg := &sampleMsg{}
-			port.outgoingBuf.Push(msg)
-
-			msgRet := port.RetrieveOutgoing()
-
-			Expect(msgRet).To(BeIdenticalTo(msg))
-		})
 })

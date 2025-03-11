@@ -1,21 +1,21 @@
 package writeback
 
 import (
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/sim"
-	"github.com/sarchlab/akita/v4/tracing"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
+	"github.com/sarchlab/akita/v3/tracing"
 )
 
 type topParser struct {
-	cache *Comp
+	cache *Cache
 }
 
-func (p *topParser) Tick() bool {
+func (p *topParser) Tick(now sim.VTimeInSec) bool {
 	if p.cache.state != cacheStateRunning {
 		return false
 	}
 
-	req := p.cache.topPort.PeekIncoming()
+	req := p.cache.topPort.Peek()
 	if req == nil {
 		return false
 	}
@@ -33,14 +33,13 @@ func (p *topParser) Tick() bool {
 	case *mem.WriteReq:
 		trans.write = req
 	}
-
 	p.cache.dirStageBuffer.Push(trans)
 
 	p.cache.inFlightTransactions = append(p.cache.inFlightTransactions, trans)
 
 	tracing.TraceReqReceive(req, p.cache)
 
-	p.cache.topPort.RetrieveIncoming()
+	p.cache.topPort.Retrieve(now)
 
 	return true
 }

@@ -27,6 +27,8 @@ type ParallelEngine struct {
 	queueChan          chan EventQueue
 	secondaryQueues    []EventQueue
 	secondaryQueueChan chan EventQueue
+
+	simulationEndHandlers []SimulationEndHandler
 }
 
 // NewParallelEngine creates a ParallelEngine
@@ -43,7 +45,6 @@ func NewParallelEngine() *ParallelEngine {
 	e.queueChan = make(chan EventQueue, numQueues)
 	e.secondaryQueues = make([]EventQueue, 0, numQueues)
 	e.secondaryQueueChan = make(chan EventQueue, numQueues)
-
 	for i := 0; i < numQueues; i++ {
 		queue := NewEventQueue()
 		//queue := NewInsertionQueue()
@@ -88,11 +89,9 @@ func NewParallelEngine() *ParallelEngine {
 
 func (e *ParallelEngine) readNow() VTimeInSec {
 	var now VTimeInSec
-
 	e.nowLock.RLock()
 	now = e.now
 	e.nowLock.RUnlock()
-
 	return now
 }
 
@@ -115,7 +114,6 @@ func (e *ParallelEngine) Schedule(evt Event) {
 		queue := <-e.secondaryQueueChan
 		queue.Push(evt)
 		e.secondaryQueueChan <- queue
-
 		return
 	}
 
@@ -146,7 +144,6 @@ func (e *ParallelEngine) determineWhatToRun() {
 	if primaryTime <= secondaryTime {
 		e.runningSecondaryEvents = false
 		e.writeNow(primaryTime)
-
 		return
 	}
 
@@ -158,7 +155,6 @@ func (e *ParallelEngine) earliestTimeInQueueGroup(
 	queues []EventQueue,
 ) VTimeInSec {
 	earliestTime := VTimeInSec(math.MaxFloat64)
-
 	for _, q := range queues {
 		if q.Len() == 0 {
 			continue
@@ -169,7 +165,6 @@ func (e *ParallelEngine) earliestTimeInQueueGroup(
 			earliestTime = t
 		}
 	}
-
 	return earliestTime
 }
 
@@ -210,7 +205,6 @@ func (e *ParallelEngine) hasMorePrimaryEvents() bool {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -220,7 +214,6 @@ func (e *ParallelEngine) hasMoreSecondaryEvents() bool {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -229,7 +222,6 @@ func (e *ParallelEngine) runEventsUntilConflict(
 	queueChan chan EventQueue,
 ) {
 	now := e.readNow()
-
 	for _, queue := range queues {
 		for queue.Len() > 0 {
 			evt := queue.Peek()
@@ -298,4 +290,21 @@ func (e *ParallelEngine) Continue() {
 // Specifically, the run time of the current event.
 func (e *ParallelEngine) CurrentTime() VTimeInSec {
 	return e.readNow()
+}
+
+// RegisterSimulationEndHandler registers a handler to be called after the
+// simulation ends.
+func (e *ParallelEngine) RegisterSimulationEndHandler(
+	handler SimulationEndHandler,
+) {
+	e.simulationEndHandlers = append(e.simulationEndHandlers, handler)
+}
+
+// Finished should be called after the simulation compeletes. It calls
+// all the registered SimulationEndHandler
+func (e *ParallelEngine) Finished() {
+	now := e.readNow()
+	for _, h := range e.simulationEndHandlers {
+		h.Handle(now)
+	}
 }

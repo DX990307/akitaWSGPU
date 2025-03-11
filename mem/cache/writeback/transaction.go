@@ -1,10 +1,10 @@
 package writeback
 
 import (
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/mem/vm"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/mem/vm"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 type action int
@@ -47,11 +47,9 @@ func (t transaction) accessReq() mem.AccessReq {
 	if t.read != nil {
 		return t.read
 	}
-
 	if t.write != nil {
 		return t.write
 	}
-
 	return nil
 }
 
@@ -59,10 +57,8 @@ func (t transaction) req() sim.Msg {
 	if t.accessReq() != nil {
 		return t.accessReq()
 	}
-
 	if t.flush != nil {
 		return t.flush
 	}
-
 	return nil
 }

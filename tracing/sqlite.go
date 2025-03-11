@@ -83,7 +83,6 @@ func (t *SQLiteTraceWriter) createDatabase() {
 	}
 
 	filename := t.dbName + ".sqlite3"
-
 	_, err := os.Stat(filename)
 	if err == nil {
 		panic(fmt.Errorf("file %s already exists", filename))
@@ -168,7 +167,6 @@ func (t *SQLiteTraceWriter) mustExecute(query string) sql.Result {
 		fmt.Printf("Failed to execute: %s\n", query)
 		panic(err)
 	}
-
 	return res
 }
 
@@ -206,7 +204,6 @@ func (r *SQLiteTraceReader) ListComponents() []string {
 	if err != nil {
 		panic(err)
 	}
-
 	defer func() {
 		err := rows.Close()
 		if err != nil {
@@ -216,12 +213,10 @@ func (r *SQLiteTraceReader) ListComponents() []string {
 
 	for rows.Next() {
 		var component string
-
 		err := rows.Scan(&component)
 		if err != nil {
 			panic(err)
 		}
-
 		components = append(components, component)
 	}
 
@@ -238,7 +233,6 @@ func (r *SQLiteTraceReader) ListTasks(query TaskQuery) []Task {
 	}
 
 	tasks := []Task{}
-
 	for rows.Next() {
 		t := Task{}
 		pt := Task{}
@@ -261,7 +255,6 @@ func (r *SQLiteTraceReader) ListTasks(query TaskQuery) []Task {
 				&pt.StartTime,
 				&pt.EndTime,
 			)
-
 			if err != nil {
 				panic(err)
 			}
@@ -275,7 +268,6 @@ func (r *SQLiteTraceReader) ListTasks(query TaskQuery) []Task {
 				&t.StartTime,
 				&t.EndTime,
 			)
-
 			if err != nil {
 				panic(err)
 			}

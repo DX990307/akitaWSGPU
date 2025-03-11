@@ -4,8 +4,8 @@ import (
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	cache2 "github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/sim"
+	cache2 "github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 var _ = Describe("Control Stage", func() {
@@ -18,7 +18,7 @@ var _ = Describe("Control Stage", func() {
 		transactions []*transaction
 		directory    *MockDirectory
 		s            *controlStage
-		cache        *Comp
+		cache        *Cache
 		inBuf        *MockBuffer
 		mshr         *MockMSHR
 		c            *coalescer
@@ -27,21 +27,8 @@ var _ = Describe("Control Stage", func() {
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
 		ctrlPort = NewMockPort(mockCtrl)
-		ctrlPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("CtrlPort")).
-			AnyTimes()
 		topPort = NewMockPort(mockCtrl)
-		topPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("TopPort")).
-			AnyTimes()
 		bottomPort = NewMockPort(mockCtrl)
-		bottomPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("BottomPort")).
-			AnyTimes()
-
 		directory = NewMockDirectory(mockCtrl)
 		inBuf = NewMockBuffer(mockCtrl)
 		mshr = NewMockMSHR(mockCtrl)
@@ -49,7 +36,7 @@ var _ = Describe("Control Stage", func() {
 
 		transactions = nil
 
-		cache = &Comp{
+		cache = &Cache{
 			topPort:       topPort,
 			bottomPort:    bottomPort,
 			dirBuf:        inBuf,
@@ -72,9 +59,9 @@ var _ = Describe("Control Stage", func() {
 	})
 
 	It("should do nothing if no request", func() {
-		ctrlPort.EXPECT().PeekIncoming().Return(nil)
+		ctrlPort.EXPECT().Peek().Return(nil)
 
-		madeProgress := s.Tick()
+		madeProgress := s.Tick(10)
 
 		Expect(madeProgress).To(BeFalse())
 	})
@@ -85,9 +72,9 @@ var _ = Describe("Control Stage", func() {
 		flushReq := cache2.FlushReqBuilder{}.Build()
 		flushReq.DiscardInflight = false
 		s.currFlushReq = flushReq
-		ctrlPort.EXPECT().PeekIncoming().Return(flushReq)
+		ctrlPort.EXPECT().Peek().Return(flushReq)
 
-		madeProgress := s.Tick()
+		madeProgress := s.Tick(10)
 
 		Expect(madeProgress).To(BeFalse())
 	})
@@ -103,15 +90,15 @@ var _ = Describe("Control Stage", func() {
 			Expect(rsp.RspTo).To(Equal(flushReq.ID))
 		})
 
-		topPort.EXPECT().PeekIncoming().Return(nil)
-		bottomPort.EXPECT().PeekIncoming().Return(nil)
+		topPort.EXPECT().Peek().Return(nil)
+		bottomPort.EXPECT().Peek().Return(nil)
 		inBuf.EXPECT().Pop()
 		directory.EXPECT().Reset()
 		mshr.EXPECT().Reset()
 
-		ctrlPort.EXPECT().PeekIncoming().Return(flushReq)
+		ctrlPort.EXPECT().Peek().Return(flushReq)
 
-		madeProgress := s.Tick()
+		madeProgress := s.Tick(10)
 
 		Expect(madeProgress).To(BeTrue())
 		Expect(s.currFlushReq).To(BeNil())

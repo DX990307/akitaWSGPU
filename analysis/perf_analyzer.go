@@ -8,7 +8,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // PerfAnalyzerEntry is a single entry in the performance database.
@@ -17,10 +17,11 @@ type PerfAnalyzerEntry struct {
 	Start       sim.VTimeInSec
 	End         sim.VTimeInSec
 	Where       string
-	WhereRemote sim.RemotePort
+	WhereRemote string
 	What        string
 	Value       float64
 	Unit        string
+	Hops        int
 }
 
 // PerfLogger is the interface that provide the service that can record
@@ -156,7 +157,6 @@ func (b PerfAnalyzerBuilder) WithPeriod(
 ) PerfAnalyzerBuilder {
 	b.usePeriod = true
 	b.period = period
-
 	return b
 }
 
@@ -184,7 +184,6 @@ func (b PerfAnalyzerBuilder) WithEngine(
 // Build creates a PerfAnalyzer.
 func (b PerfAnalyzerBuilder) Build() *PerfAnalyzer {
 	var backend PerfAnalyzerBackend
-
 	if b.dbFilename != "" {
 		if b.backendType == "csv" {
 			backend = NewCSVPerfAnalyzerBackend(b.dbFilename)
@@ -231,12 +230,12 @@ func (b *PerfAnalyzer) GetCurrentTraffic(comp string) string {
 	defer b.mu.Unlock()
 
 	for _, data := range b.portDataTable {
-		if strings.Contains(data.Where, comp) {
+		if strings.Contains(data.Where, comp) || strings.Contains(data.WhereRemote, comp) {
 			entry := map[string]string{
 				"start":      fmt.Sprintf("%.9f", data.Start),
 				"end":        fmt.Sprintf("%.9f", data.End),
 				"localPort":  data.Where,
-				"remotePort": string(data.WhereRemote),
+				"remotePort": data.WhereRemote,
 				"value":      fmt.Sprintf("%.0f", data.Value),
 				"unit":       data.Unit,
 			}

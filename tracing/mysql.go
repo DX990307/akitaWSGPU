@@ -120,7 +120,6 @@ func (t *MySQLTraceWriter) Flush() {
 
 	for i := range t.tasksToWriteToDB {
 		sqlStr += "(?, ?, ?, ?, ?, ?, ?),"
-
 		vals = append(vals,
 			t.tasksToWriteToDB[i].ID,
 			t.tasksToWriteToDB[i].ParentID,
@@ -182,7 +181,6 @@ func (r *MySQLTraceReader) ListComponents() []string {
 	if err != nil {
 		panic(err)
 	}
-
 	defer func() {
 		err := rows.Close()
 		if err != nil {
@@ -192,12 +190,10 @@ func (r *MySQLTraceReader) ListComponents() []string {
 
 	for rows.Next() {
 		var component string
-
 		err := rows.Scan(&component)
 		if err != nil {
 			panic(err)
 		}
-
 		components = append(components, component)
 	}
 
@@ -214,7 +210,6 @@ func (r *MySQLTraceReader) ListTasks(query TaskQuery) []Task {
 	}
 
 	tasks := []Task{}
-
 	for rows.Next() {
 		t := Task{}
 		pt := Task{}
@@ -349,13 +344,11 @@ func (c *dbConnection) init(dbName string) {
 func (c *dbConnection) getCredentials() {
 	c.username = os.Getenv("AKITA_TRACE_USERNAME")
 	if c.username == "" {
-		panic(`trace username is not set, use environment variable ` +
-			`AKITA_TRACE_USERNAME to set it.`)
+		panic(`trace username is not set, use environment variable AKITA_TRACE_USERNAME to set it.`)
 	}
 
 	c.password = os.Getenv("AKITA_TRACE_PASSWORD")
 	c.ipAddress = os.Getenv("AKITA_TRACE_IP")
-
 	if c.ipAddress == "" {
 		c.ipAddress = "127.0.0.1"
 	}
@@ -364,19 +357,16 @@ func (c *dbConnection) getCredentials() {
 	if portString == "" {
 		portString = "3306"
 	}
-
 	port, err := strconv.Atoi(portString)
 	if err != nil {
 		panic(err)
 	}
-
 	c.port = port
 }
 
 func (c *dbConnection) connect() {
 	connectStr := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
 		c.username, c.password, c.ipAddress, c.port, c.dbName)
-
 	db, err := sql.Open("mysql", connectStr)
 	if err != nil {
 		panic(err)

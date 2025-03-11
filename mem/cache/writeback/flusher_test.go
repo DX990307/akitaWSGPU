@@ -4,51 +4,43 @@ import (
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 var _ = Describe("Flusher", func() {
 	var (
-		mockCtrl       *gomock.Controller
-		controlPort    *MockPort
-		topPort        *MockPort
-		bottomPort     *MockPort
-		directory      *MockDirectory
-		dirBuf         *MockBuffer
-		bankBuf        *MockBuffer
-		mshrStageBuf   *MockBuffer
-		writeBufferBuf *MockBuffer
-		mshr           *MockMSHR
-		cacheModule    *Comp
-		f              *flusher
+		mockCtrl          *gomock.Controller
+		controlPort       *MockPort
+		topPort           *MockPort
+		bottomPort        *MockPort
+		directory         *MockDirectory
+		dirBuf            *MockBuffer
+		bankBuf           *MockBuffer
+		mshrStageBuf      *MockBuffer
+		writeBufferBuf    *MockBuffer
+		topPortSender     *MockBufferedSender
+		bottomPortSender  *MockBufferedSender
+		controlPortSender *MockBufferedSender
+		mshr              *MockMSHR
+		cacheModule       *Cache
+		f                 *flusher
 	)
 
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
-
 		controlPort = NewMockPort(mockCtrl)
-		controlPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("ControlPort")).
-			AnyTimes()
 		topPort = NewMockPort(mockCtrl)
-		topPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("TopPort")).
-			AnyTimes()
 		bottomPort = NewMockPort(mockCtrl)
-		bottomPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("BottomPort")).
-			AnyTimes()
-
 		directory = NewMockDirectory(mockCtrl)
 		directory.EXPECT().WayAssociativity().Return(2).AnyTimes()
 		dirBuf = NewMockBuffer(mockCtrl)
 		bankBuf = NewMockBuffer(mockCtrl)
 		mshrStageBuf = NewMockBuffer(mockCtrl)
 		writeBufferBuf = NewMockBuffer(mockCtrl)
+		topPortSender = NewMockBufferedSender(mockCtrl)
+		bottomPortSender = NewMockBufferedSender(mockCtrl)
+		controlPortSender = NewMockBufferedSender(mockCtrl)
 		mshr = NewMockMSHR(mockCtrl)
 
 		builder := MakeBuilder()
@@ -62,6 +54,9 @@ var _ = Describe("Flusher", func() {
 		cacheModule.dirToBankBuffers = []sim.Buffer{bankBuf}
 		cacheModule.mshrStageBuffer = mshrStageBuf
 		cacheModule.writeBufferBuffer = writeBufferBuf
+		cacheModule.topSender = topPortSender
+		cacheModule.bottomSender = bottomPortSender
+		cacheModule.controlPortSender = controlPortSender
 		cacheModule.dirStage = &directoryStage{
 			cache:    cacheModule,
 			pipeline: NewMockPipeline(mockCtrl),
@@ -77,18 +72,18 @@ var _ = Describe("Flusher", func() {
 	})
 
 	It("should do nothing if no request", func() {
-		controlPort.EXPECT().PeekIncoming().Return(nil)
-		ret := f.Tick()
+		controlPort.EXPECT().Peek().Return(nil)
+		ret := f.Tick(10)
 		Expect(ret).To(BeFalse())
 	})
 
 	Context("flush without reset", func() {
 		It("should start flushing", func() {
-			req := cache.FlushReqBuilder{}.Build()
-			controlPort.EXPECT().PeekIncoming().Return(req)
-			controlPort.EXPECT().RetrieveIncoming()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
+			controlPort.EXPECT().Peek().Return(req)
+			controlPort.EXPECT().Retrieve(gomock.Any())
 
-			ret := f.Tick()
+			ret := f.Tick(10)
 
 			Expect(ret).To(BeTrue())
 			Expect(f.processingFlush).To(BeIdenticalTo(req))
@@ -99,10 +94,10 @@ var _ = Describe("Flusher", func() {
 			cacheModule.state = cacheStatePreFlushing
 			cacheModule.inFlightTransactions = append(
 				cacheModule.inFlightTransactions, &transaction{})
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 
-			ret := f.Tick()
+			ret := f.Tick(10)
 
 			Expect(ret).To(BeFalse())
 		})
@@ -110,7 +105,7 @@ var _ = Describe("Flusher", func() {
 		It("should move to flush stage if no inflight transaction", func() {
 			cacheModule.state = cacheStatePreFlushing
 			cacheModule.inFlightTransactions = nil
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 
 			sets := []cache.Set{
@@ -125,7 +120,7 @@ var _ = Describe("Flusher", func() {
 			}
 			directory.EXPECT().GetSets().Return(sets)
 
-			ret := f.Tick()
+			ret := f.Tick(10)
 
 			Expect(ret).To(BeTrue())
 			Expect(cacheModule.state).To(Equal(cacheStateFlushing))
@@ -134,7 +129,7 @@ var _ = Describe("Flusher", func() {
 
 		It("should stall if bank buffer is full", func() {
 			cacheModule.state = cacheStateFlushing
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 
 			blocks := []*cache.Block{{Tag: 0x0}, {Tag: 0x40}}
@@ -142,14 +137,14 @@ var _ = Describe("Flusher", func() {
 
 			bankBuf.EXPECT().CanPush().Return(false)
 
-			ret := f.Tick()
+			ret := f.Tick(10)
 
 			Expect(ret).To(BeFalse())
 		})
 
 		It("should send read for eviction to bank", func() {
 			cacheModule.state = cacheStateFlushing
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 
 			blocks := []*cache.Block{
@@ -176,7 +171,7 @@ var _ = Describe("Flusher", func() {
 				Expect(trans.evictingDirtyMask).To(Equal(blocks[0].DirtyMask))
 			})
 
-			ret := f.Tick()
+			ret := f.Tick(10)
 
 			Expect(ret).To(BeTrue())
 			Expect(f.blockToEvict).NotTo(ContainElement(blocks[0]))
@@ -185,48 +180,48 @@ var _ = Describe("Flusher", func() {
 
 		It("should wait for bank buffer", func() {
 			cacheModule.state = cacheStateFlushing
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 			f.blockToEvict = []*cache.Block{}
 
 			bankBuf.EXPECT().Size().Return(1)
 
-			madeProgress := f.Tick()
+			madeProgress := f.Tick(10)
 
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should wait for bank stage", func() {
 			cacheModule.state = cacheStateFlushing
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 			f.blockToEvict = []*cache.Block{}
 
 			bankBuf.EXPECT().Size().Return(0)
 			cacheModule.bankStages[0].inflightTransCount = 1
 
-			madeProgress := f.Tick()
+			madeProgress := f.Tick(10)
 
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should wait for write buffer buffer", func() {
 			cacheModule.state = cacheStateFlushing
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 			f.blockToEvict = []*cache.Block{}
 
 			bankBuf.EXPECT().Size().Return(0)
 			writeBufferBuf.EXPECT().Size().Return(1)
 
-			madeProgress := f.Tick()
+			madeProgress := f.Tick(10)
 
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should wait for write buffer", func() {
 			cacheModule.state = cacheStateFlushing
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 			f.blockToEvict = []*cache.Block{}
 
@@ -234,30 +229,30 @@ var _ = Describe("Flusher", func() {
 			writeBufferBuf.EXPECT().Size().Return(0)
 			cacheModule.writeBuffer.inflightEviction = make([]*transaction, 1)
 
-			madeProgress := f.Tick()
+			madeProgress := f.Tick(10)
 
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should stall is controlPort sender is busy", func() {
 			cacheModule.state = cacheStateFlushing
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 			f.blockToEvict = []*cache.Block{}
 
 			bankBuf.EXPECT().Size().Return(0)
 			writeBufferBuf.EXPECT().Size().Return(0)
 
-			controlPort.EXPECT().CanSend().Return(false)
+			controlPortSender.EXPECT().CanSend(1).Return(false)
 
-			ret := f.Tick()
+			ret := f.Tick(10)
 
 			Expect(ret).To(BeFalse())
 		})
 
 		It("should send response if all the blocks are evicted", func() {
 			cacheModule.state = cacheStateFlushing
-			req := cache.FlushReqBuilder{}.Build()
+			req := cache.FlushReqBuilder{}.WithSendTime(8).Build()
 			f.processingFlush = req
 			f.blockToEvict = []*cache.Block{}
 
@@ -265,13 +260,13 @@ var _ = Describe("Flusher", func() {
 			writeBufferBuf.EXPECT().Size().Return(0)
 			mshr.EXPECT().Reset()
 			directory.EXPECT().Reset()
-			controlPort.EXPECT().CanSend().Return(true)
-			controlPort.EXPECT().Send(gomock.Any()).
+			controlPortSender.EXPECT().CanSend(1).Return(true)
+			controlPortSender.EXPECT().Send(gomock.Any()).
 				Do(func(rsp *cache.FlushRsp) {
 					Expect(rsp.RspTo).To(Equal(req.ID))
 				})
 
-			ret := f.Tick()
+			ret := f.Tick(10)
 
 			Expect(ret).To(BeTrue())
 			Expect(f.processingFlush).To(BeNil())
@@ -282,6 +277,7 @@ var _ = Describe("Flusher", func() {
 	Context("flush with reset", func() {
 		It("should remove inflight state", func() {
 			req := cache.FlushReqBuilder{}.
+				WithSendTime(8).
 				DiscardInflight().
 				Build()
 			sets := []cache.Set{
@@ -295,8 +291,8 @@ var _ = Describe("Flusher", func() {
 				}},
 			}
 
-			controlPort.EXPECT().PeekIncoming().Return(req)
-			controlPort.EXPECT().RetrieveIncoming()
+			controlPort.EXPECT().Peek().Return(req)
+			controlPort.EXPECT().Retrieve(gomock.Any())
 			directory.EXPECT().GetSets().Return(sets)
 			bankBuf.EXPECT().Clear()
 			dirBuf.EXPECT().Clear()
@@ -304,11 +300,12 @@ var _ = Describe("Flusher", func() {
 			cacheModule.dirStage.buf.(*MockBuffer).EXPECT().Clear()
 			mshrStageBuf.EXPECT().Clear()
 			writeBufferBuf.EXPECT().Clear()
-			topPort.EXPECT().RetrieveIncoming().Return(nil)
+			topPort.EXPECT().Retrieve(gomock.Any()).Return(nil)
+			topPortSender.EXPECT().Clear()
 
 			// bottomPortSender.EXPECT().Clear()
 
-			ret := f.Tick()
+			ret := f.Tick(10)
 
 			Expect(ret).To(BeTrue())
 			Expect(f.processingFlush).To(BeIdenticalTo(req))
@@ -319,25 +316,25 @@ var _ = Describe("Flusher", func() {
 
 	Context("restarting", func() {
 		It("should stall if cannot send to control port", func() {
-			req := cache.RestartReqBuilder{}.Build()
-			controlPort.EXPECT().PeekIncoming().Return(req)
-			controlPort.EXPECT().CanSend().Return(false)
+			req := cache.RestartReqBuilder{}.WithSendTime(10).Build()
+			controlPort.EXPECT().Peek().Return(req)
+			controlPortSender.EXPECT().CanSend(1).Return(false)
 
-			madeProgress := f.Tick()
+			madeProgress := f.Tick(10)
 
 			Expect(madeProgress).To(BeFalse())
 		})
 
 		It("should restart", func() {
-			req := cache.RestartReqBuilder{}.Build()
-			controlPort.EXPECT().PeekIncoming().Return(req)
-			controlPort.EXPECT().RetrieveIncoming()
-			controlPort.EXPECT().CanSend().Return(true)
-			controlPort.EXPECT().Send(gomock.Any())
-			topPort.EXPECT().RetrieveIncoming().Return(nil)
-			bottomPort.EXPECT().RetrieveIncoming().Return(nil)
+			req := cache.RestartReqBuilder{}.WithSendTime(10).Build()
+			controlPort.EXPECT().Peek().Return(req)
+			controlPort.EXPECT().Retrieve(gomock.Any())
+			controlPortSender.EXPECT().Send(gomock.Any())
+			controlPortSender.EXPECT().CanSend(1).Return(true)
+			topPort.EXPECT().Retrieve(gomock.Any()).Return(nil)
+			bottomPort.EXPECT().Retrieve(gomock.Any()).Return(nil)
 
-			madeProgress := f.Tick()
+			madeProgress := f.Tick(10)
 
 			Expect(madeProgress).To(BeTrue())
 			Expect(cacheModule.state).To(Equal(cacheStateRunning))

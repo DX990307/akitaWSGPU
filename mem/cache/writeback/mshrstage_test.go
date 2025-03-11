@@ -4,37 +4,32 @@ import (
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/sarchlab/akita/v4/mem/cache"
-	"github.com/sarchlab/akita/v4/mem/mem"
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/cache"
+	"github.com/sarchlab/akita/v3/mem/mem"
 )
 
 var _ = Describe("MSHR Stage", func() {
 	var (
 		mockCtrl    *gomock.Controller
-		cacheModule *Comp
+		cacheModule *Cache
 		ms          *mshrStage
 		inBuf       *MockBuffer
 		mshr        *MockMSHR
-		topPort     *MockPort
+		topSender   *MockBufferedSender
 	)
 
 	BeforeEach(func() {
 		mockCtrl = gomock.NewController(GinkgoT())
 		inBuf = NewMockBuffer(mockCtrl)
 		mshr = NewMockMSHR(mockCtrl)
-		topPort = NewMockPort(mockCtrl)
-		topPort.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("TopPort")).
-			AnyTimes()
+		topSender = NewMockBufferedSender(mockCtrl)
 
 		builder := MakeBuilder()
 		cacheModule = builder.Build("Cache")
 		cacheModule.mshr = mshr
+		cacheModule.topSender = topSender
 		cacheModule.mshrStageBuffer = inBuf
 		cacheModule.inFlightTransactions = nil
-		cacheModule.topPort = topPort
 
 		ms = &mshrStage{
 			cache: cacheModule,
@@ -47,12 +42,13 @@ var _ = Describe("MSHR Stage", func() {
 
 	It("should do nothing if there is no entry in input buffer", func() {
 		inBuf.EXPECT().Pop().Return(nil)
-		ret := ms.Tick()
+		ret := ms.Tick(10)
 		Expect(ret).To(BeFalse())
 	})
 
 	It("should stall if topSender is busy", func() {
 		read := mem.ReadReqBuilder{}.
+			WithSendTime(6).
 			WithAddress(0x104).
 			WithByteSize(4).
 			Build()
@@ -70,9 +66,9 @@ var _ = Describe("MSHR Stage", func() {
 			},
 		}
 		inBuf.EXPECT().Pop().Return(mshrEntry)
-		topPort.EXPECT().CanSend().Return(false)
+		topSender.EXPECT().CanSend(1).Return(false)
 
-		ret := ms.Tick()
+		ret := ms.Tick(10)
 
 		Expect(ret).To(BeFalse())
 		Expect(ms.processingMSHREntry).To(BeIdenticalTo(mshrEntry))
@@ -81,6 +77,7 @@ var _ = Describe("MSHR Stage", func() {
 	It("should send data ready to top", func() {
 		block := &cache.Block{Tag: 0x100}
 		read := mem.ReadReqBuilder{}.
+			WithSendTime(6).
 			WithAddress(0x104).
 			WithByteSize(4).
 			Build()
@@ -102,13 +99,13 @@ var _ = Describe("MSHR Stage", func() {
 			},
 		}
 		inBuf.EXPECT().Pop().Return(mshrEntry)
-		topPort.EXPECT().CanSend().Return(true)
-		topPort.EXPECT().Send(gomock.Any()).
+		topSender.EXPECT().CanSend(1).Return(true)
+		topSender.EXPECT().Send(gomock.Any()).
 			Do(func(dr *mem.DataReadyRsp) {
 				Expect(dr.Data).To(Equal([]byte{5, 6, 7, 8}))
 			})
 
-		ret := ms.Tick()
+		ret := ms.Tick(10)
 
 		Expect(ret).To(BeTrue())
 		Expect(ms.processingMSHREntry).To(BeNil())
@@ -118,6 +115,7 @@ var _ = Describe("MSHR Stage", func() {
 	It("should send write done to top", func() {
 		block := &cache.Block{Tag: 0x100}
 		write := mem.WriteReqBuilder{}.
+			WithSendTime(6).
 			WithAddress(0x104).
 			WithData([]byte{9, 9, 9, 9}).
 			Build()
@@ -141,13 +139,13 @@ var _ = Describe("MSHR Stage", func() {
 			},
 		}
 		ms.processingMSHREntry = mshrEntry
-		topPort.EXPECT().CanSend().Return(true)
-		topPort.EXPECT().Send(gomock.Any()).
+		topSender.EXPECT().CanSend(1).Return(true)
+		topSender.EXPECT().Send(gomock.Any()).
 			Do(func(done *mem.WriteDoneRsp) {
 				Expect(done.RespondTo).To(Equal(write.ID))
 			})
 
-		ret := ms.Tick()
+		ret := ms.Tick(10)
 
 		Expect(ret).To(BeTrue())
 		Expect(ms.processingMSHREntry).To(BeNil())
@@ -157,6 +155,7 @@ var _ = Describe("MSHR Stage", func() {
 	It("should discard the request if it is no longer inflight", func() {
 		block := &cache.Block{Tag: 0x100}
 		read := mem.ReadReqBuilder{}.
+			WithSendTime(6).
 			WithAddress(0x104).
 			WithByteSize(4).
 			Build()
@@ -176,9 +175,9 @@ var _ = Describe("MSHR Stage", func() {
 			},
 		}
 		inBuf.EXPECT().Pop().Return(mshrEntry)
-		topPort.EXPECT().CanSend().Return(true)
+		topSender.EXPECT().CanSend(1).Return(true)
 
-		ret := ms.Tick()
+		ret := ms.Tick(10)
 
 		Expect(ret).To(BeTrue())
 		Expect(ms.processingMSHREntry).To(BeNil())

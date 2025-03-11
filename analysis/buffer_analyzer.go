@@ -3,7 +3,7 @@ package analysis
 import (
 	"math"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 	"github.com/tebeka/atexit"
 )
 
@@ -67,7 +67,6 @@ func (b *BufferAnalyzer) summarizePeriod(
 ) {
 	sumLevel := 0.0
 	sumDuration := 0.0
-
 	for level, duration := range b.bufLevelToDuration {
 		sumLevel += float64(level) * float64(duration)
 		sumDuration += float64(duration)
@@ -162,7 +161,6 @@ func (b BufferAnalyzerBuilder) WithPeriod(
 ) BufferAnalyzerBuilder {
 	b.usePeriod = true
 	b.period = period
-
 	return b
 }
 

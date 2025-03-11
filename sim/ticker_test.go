@@ -30,49 +30,42 @@ var _ = Describe("Ticking Component", func() {
 			Do(func(e TickEvent) {
 				Expect(e.Time()).To(Equal(VTimeInSec(11)))
 			})
-		engine.EXPECT().CurrentTime().Return(VTimeInSec(10))
-		tc.NotifyRecv(nil)
+		tc.NotifyRecv(10, nil)
 	})
 
-	It("should start ticking when notified of a port becoming available",
-		func() {
-			engine.EXPECT().Schedule(gomock.Any()).
-				Do(func(e TickEvent) {
-					Expect(e.Time()).To(Equal(VTimeInSec(11)))
-				})
-			engine.EXPECT().CurrentTime().Return(VTimeInSec(10))
-			tc.NotifyPortFree(nil)
-		})
+	It("should start ticking when notified of a port becoming available", func() {
+		engine.EXPECT().Schedule(gomock.Any()).
+			Do(func(e TickEvent) {
+				Expect(e.Time()).To(Equal(VTimeInSec(11)))
+			})
+		tc.NotifyPortFree(10, nil)
+	})
 
 	It("should tick when the ticker make progress in a tick", func() {
 		engine.EXPECT().Schedule(gomock.Any()).
 			Do(func(e TickEvent) {
 				Expect(e.Time()).To(Equal(VTimeInSec(11)))
 			})
-		ticker.EXPECT().Tick().Return(true)
-		engine.EXPECT().CurrentTime().Return(VTimeInSec(10))
-		tc.Handle(MakeTickEvent(tc, VTimeInSec(10)))
+		ticker.EXPECT().Tick(VTimeInSec(10)).Return(true)
+		tc.Handle(MakeTickEvent(10, tc))
 	})
 
-	It("should not tick if there is another tick scheduled in the future",
-		func() {
-			engine.EXPECT().Schedule(gomock.Any()).
-				Do(func(e TickEvent) {
-					Expect(e.Time()).To(Equal(VTimeInSec(11)))
-				})
+	It("should not tick if there is another tick scheduled in the future", func() {
+		engine.EXPECT().Schedule(gomock.Any()).
+			Do(func(e TickEvent) {
+				Expect(e.Time()).To(Equal(VTimeInSec(11)))
+			})
 
-			ticker.EXPECT().Tick().Return(true)
-			engine.EXPECT().CurrentTime().Return(VTimeInSec(10))
-			tc.Handle(MakeTickEvent(tc, VTimeInSec(10)))
+		ticker.EXPECT().Tick(VTimeInSec(10)).Return(true)
+		tc.Handle(MakeTickEvent(10, tc))
 
-			engine.EXPECT().CurrentTime().Return(VTimeInSec(10))
-			tc.TickNow()
-		})
+		ticker.EXPECT().Tick(VTimeInSec(10)).Return(true)
+		tc.Handle(MakeTickEvent(10, tc))
+	})
 
 	It("should stop ticking if no progress is made", func() {
-		ticker.EXPECT().Tick().Return(false)
-		tc.Handle(MakeTickEvent(tc, VTimeInSec(10)))
-		engine.EXPECT().Schedule(gomock.Any()).Times(0)
+		ticker.EXPECT().Tick(VTimeInSec(10)).Return(false)
+		tc.Handle(MakeTickEvent(10, tc))
 	})
 
 })

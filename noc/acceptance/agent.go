@@ -3,7 +3,7 @@ package acceptance
 import (
 	"fmt"
 
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // Agent can send and receive request.
@@ -27,79 +27,51 @@ func NewAgent(
 	a := &Agent{}
 	a.test = test
 	a.TickingComponent = sim.NewTickingComponent(name, engine, freq, a)
-
 	for i := 0; i < numPorts; i++ {
-		p := sim.NewPort(a, 1, 1, fmt.Sprintf("%s.Port%d", name, i))
+		p := sim.NewLimitNumMsgPort(a, 1, fmt.Sprintf("%s.Port%d", name, i))
 		a.AgentPorts = append(a.AgentPorts, p)
 	}
-
 	return a
 }
 
 // Tick tries to receive requests and send requests out.
-func (a *Agent) Tick() bool {
+func (a *Agent) Tick(now sim.VTimeInSec) bool {
 	madeProgress := false
-	madeProgress = a.send() || madeProgress
-	madeProgress = a.recv() || madeProgress
-
+	madeProgress = a.send(now) || madeProgress
+	madeProgress = a.recv(now) || madeProgress
 	return madeProgress
 }
 
-func (a *Agent) send() bool {
+func (a *Agent) send(now sim.VTimeInSec) bool {
 	if len(a.MsgsToSend) == 0 {
 		return false
 	}
 
 	msg := a.MsgsToSend[0]
-	src := msg.Meta().Src
-
-	srcPort := a.findPortByName(src)
-
-	err := srcPort.Send(msg)
+	msg.Meta().SendTime = now
+	err := msg.Meta().Src.Send(msg)
 	if err == nil {
 		a.MsgsToSend = a.MsgsToSend[1:]
 		a.sendBytes += uint64(msg.Meta().TrafficBytes)
-
 		return true
 	}
 
 	return false
 }
 
-func (a *Agent) findPortByName(src sim.RemotePort) sim.Port {
-	var srcPort sim.Port
-
-	for _, port := range a.AgentPorts {
-		if port.AsRemote() == src {
-			srcPort = port
-			break
-		}
-	}
-
-	if srcPort == nil {
-		panic(fmt.Sprintf("src port not found for %s", src))
-	}
-
-	return srcPort
-}
-
-func (a *Agent) recv() bool {
+func (a *Agent) recv(now sim.VTimeInSec) bool {
 	madeProgress := false
-
 	for _, port := range a.AgentPorts {
-		msg := port.RetrieveIncoming()
-
+		msg := port.Retrieve(now)
 		if msg != nil {
 			a.test.receiveMsg(msg, port)
 			a.recvBytes += uint64(msg.Meta().TrafficBytes)
+			madeProgress = true
 
 			// fmt.Printf("%.10f, %s, agent received, msg-%s\n",
 			// now, a.Name(), msg.Meta().ID)
-
-			madeProgress = true
 		}
 	}
-
 	return madeProgress
 }
 

@@ -3,9 +3,8 @@ package idealmemcontroller
 import (
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
-	"github.com/sarchlab/akita/v4/mem/mem"
-
-	"github.com/sarchlab/akita/v4/sim"
+	"github.com/sarchlab/akita/v3/mem/mem"
+	"github.com/sarchlab/akita/v3/sim"
 
 	. "github.com/onsi/gomega"
 )
@@ -24,10 +23,6 @@ var _ = Describe("Ideal Memory Controller", func() {
 
 		engine = NewMockEngine(mockCtrl)
 		port = NewMockPort(mockCtrl)
-		port.EXPECT().
-			AsRemote().
-			Return(sim.RemotePort("Port")).
-			AnyTimes()
 
 		memController = MakeBuilder().
 			WithEngine(engine).
@@ -42,37 +37,49 @@ var _ = Describe("Ideal Memory Controller", func() {
 		mockCtrl.Finish()
 	})
 
+	// It("should stall if too many transactions are running", func() {
+	// 	memController.currNumTransaction = 8
+
+	// 	madeProgress := memController.Tick(10)
+
+	// 	Expect(madeProgress).To(BeFalse())
+	// })
+
 	It("should process read request", func() {
 		readReq := mem.ReadReqBuilder{}.
-			WithDst(memController.topPort.AsRemote()).
+			WithSendTime(10).
+			WithDst(memController.topPort).
 			WithAddress(0).
 			WithByteSize(4).
 			Build()
-		port.EXPECT().RetrieveIncoming().Return(readReq)
-		engine.EXPECT().CurrentTime().Return(sim.VTimeInSec(10))
+		port.EXPECT().Retrieve(gomock.Any()).Return(readReq)
 
 		engine.EXPECT().
 			Schedule(gomock.AssignableToTypeOf(&readRespondEvent{}))
 
-		madeProgress := memController.Tick()
+		madeProgress := memController.Tick(10)
+		// for i := 10; i < 20; i++ {
+		// 	madeProgress := memController.Tick(sim.VTimeInSec(i))
+		// 	Expect(madeProgress).To(BeTrue())
+		// }
 
 		Expect(madeProgress).To(BeTrue())
 	})
 
 	It("should process write request", func() {
 		writeReq := mem.WriteReqBuilder{}.
-			WithDst(memController.topPort.AsRemote()).
+			WithSendTime(10).
+			WithDst(memController.topPort).
 			WithAddress(0).
 			WithData([]byte{0, 1, 2, 3}).
 			WithDirtyMask([]bool{false, false, true, false}).
 			Build()
-		port.EXPECT().RetrieveIncoming().Return(writeReq)
-		engine.EXPECT().CurrentTime().Return(sim.VTimeInSec(10))
+		port.EXPECT().Retrieve(gomock.Any()).Return(writeReq)
 
 		engine.EXPECT().
 			Schedule(gomock.AssignableToTypeOf(&writeRespondEvent{}))
 
-		madeProgress := memController.Tick()
+		madeProgress := memController.Tick(10)
 		Expect(madeProgress).To(BeTrue())
 	})
 
@@ -81,7 +88,8 @@ var _ = Describe("Ideal Memory Controller", func() {
 		memController.Storage.Write(0, data)
 
 		readReq := mem.ReadReqBuilder{}.
-			WithDst(memController.topPort.AsRemote()).
+			WithSendTime(10).
+			WithDst(memController.topPort).
 			WithAddress(0).
 			WithByteSize(4).
 			Build()
@@ -90,9 +98,10 @@ var _ = Describe("Ideal Memory Controller", func() {
 
 		engine.EXPECT().Schedule(gomock.Any())
 		port.EXPECT().Send(gomock.AssignableToTypeOf(&mem.DataReadyRsp{}))
-		engine.EXPECT().CurrentTime().Return(sim.VTimeInSec(10))
 
 		memController.Handle(event)
+
+		// Expect(memController.currNumTransaction).To(Equal(0))
 	})
 
 	It("should retry read if send DataReady failed", func() {
@@ -100,7 +109,8 @@ var _ = Describe("Ideal Memory Controller", func() {
 		memController.Storage.Write(0, data)
 
 		readReq := mem.ReadReqBuilder{}.
-			WithDst(memController.topPort.AsRemote()).
+			WithSendTime(10).
+			WithDst(memController.topPort).
 			WithAddress(0).
 			WithByteSize(4).
 			Build()
@@ -119,20 +129,22 @@ var _ = Describe("Ideal Memory Controller", func() {
 	It("should handle write respond event without write mask", func() {
 		data := []byte{1, 2, 3, 4}
 		writeReq := mem.WriteReqBuilder{}.
-			WithDst(memController.topPort.AsRemote()).
+			WithSendTime(10).
+			WithDst(memController.topPort).
 			WithAddress(0).
 			WithData(data).
 			Build()
 		event := newWriteRespondEvent(11, memController, writeReq)
+		// memController.currNumTransaction = 1
 
 		engine.EXPECT().Schedule(gomock.Any())
 		port.EXPECT().Send(gomock.AssignableToTypeOf(&mem.WriteDoneRsp{}))
-		engine.EXPECT().CurrentTime().Return(sim.VTimeInSec(10))
 
 		memController.Handle(event)
 
 		retData, _ := memController.Storage.Read(0, 4)
 		Expect(retData).To(Equal([]byte{1, 2, 3, 4}))
+		// Expect(memController.currNumTransaction).To(Equal(0))
 	})
 
 	It("should handle write respond event", func() {
@@ -141,7 +153,8 @@ var _ = Describe("Ideal Memory Controller", func() {
 		dirtyMask := []bool{false, true, false, false}
 
 		writeReq := mem.WriteReqBuilder{}.
-			WithDst(memController.topPort.AsRemote()).
+			WithSendTime(10).
+			WithDst(memController.topPort).
 			WithAddress(0).
 			WithData(data).
 			WithDirtyMask(dirtyMask).
@@ -150,7 +163,6 @@ var _ = Describe("Ideal Memory Controller", func() {
 
 		engine.EXPECT().Schedule(gomock.Any())
 		port.EXPECT().Send(gomock.AssignableToTypeOf(&mem.WriteDoneRsp{}))
-		engine.EXPECT().CurrentTime().Return(sim.VTimeInSec(10))
 
 		memController.Handle(event)
 		retData, _ := memController.Storage.Read(0, 4)
@@ -170,7 +182,8 @@ var _ = Describe("Ideal Memory Controller", func() {
 			true, true, true, true, false, false, false, false,
 		}
 		writeReq := mem.WriteReqBuilder{}.
-			WithDst(memController.topPort.AsRemote()).
+			WithSendTime(10).
+			WithDst(memController.topPort).
 			WithAddress(0).
 			WithData(data).
 			WithDirtyMask(dirtyMask).
@@ -193,7 +206,8 @@ var _ = Describe("Ideal Memory Controller", func() {
 		data := []byte{1, 2, 3, 4}
 
 		writeReq := mem.WriteReqBuilder{}.
-			WithDst(memController.topPort.AsRemote()).
+			WithSendTime(10).
+			WithDst(memController.topPort).
 			WithAddress(0).
 			WithData(data).
 			Build()

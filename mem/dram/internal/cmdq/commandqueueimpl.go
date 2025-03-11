@@ -1,8 +1,9 @@
 package cmdq
 
 import (
-	"github.com/sarchlab/akita/v4/mem/dram/internal/org"
-	"github.com/sarchlab/akita/v4/mem/dram/internal/signal"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/org"
+	"github.com/sarchlab/akita/v3/mem/dram/internal/signal"
+	"github.com/sarchlab/akita/v3/sim"
 )
 
 // A Queue is a list of commands that needs to be executed by either a bank or a
@@ -19,10 +20,12 @@ type CommandQueueImpl struct {
 
 // GetCommandToIssue returns the next command ready to issue. It returns nil
 // if there if no command ready.
-func (q *CommandQueueImpl) GetCommandToIssue() *signal.Command {
+func (q *CommandQueueImpl) GetCommandToIssue(
+	now sim.VTimeInSec,
+) *signal.Command {
 	for i := 0; i < len(q.Queues); i++ {
 		queueIndex, _ := q.getNextQueue()
-		readyCmd := q.getFirstReadyInQueue(queueIndex)
+		readyCmd := q.getFirstReadyInQueue(now, queueIndex)
 
 		if readyCmd != nil {
 			return readyCmd
@@ -36,22 +39,21 @@ func (q *CommandQueueImpl) getNextQueue() (queueIndex int, queue Queue) {
 	queueIndex = q.nextQueueIndex
 	retQueue := q.Queues[q.nextQueueIndex]
 	q.nextQueueIndex = (q.nextQueueIndex + 1) % len(q.Queues)
-
 	return queueIndex, retQueue
 }
 
 func (q *CommandQueueImpl) getFirstReadyInQueue(
+	now sim.VTimeInSec,
 	queueIndex int,
 ) *signal.Command {
 	for i, cmd := range q.Queues[queueIndex] {
-		readyCmd := q.Channel.GetReadyCommand(cmd)
+		readyCmd := q.Channel.GetReadyCommand(now, cmd)
 
 		if readyCmd != nil {
 			if cmd.Kind == readyCmd.Kind {
 				q.Queues[queueIndex] = append(
 					q.Queues[queueIndex][:i], q.Queues[queueIndex][i+1:]...)
 			}
-
 			return readyCmd
 		}
 	}
