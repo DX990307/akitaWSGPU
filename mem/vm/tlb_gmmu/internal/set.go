@@ -35,6 +35,7 @@ type block struct {
 	page      vm.Page
 	wayID     int
 	lastVisit uint64
+	local     bool
 }
 
 func (b *block) Less(anotherBlock *block) bool {

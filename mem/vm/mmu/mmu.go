@@ -5,6 +5,7 @@ import (
 	"log"
 	"reflect"
 
+	"github.com/sarchlab/akita/v3/mem/mem"
 	"github.com/sarchlab/akita/v3/mem/vm"
 	"github.com/sarchlab/akita/v3/sim"
 	"github.com/sarchlab/akita/v3/tracing"
@@ -40,6 +41,11 @@ type MMU struct {
 
 	toRemoveFromPTW        []int
 	PageAccessedByDeviceID map[uint64][]uint64
+
+	InnerLoop  map[uint64]uint64
+	MiddleLoop map[uint64]uint64
+	// GMMUCacheTable map[uint64]sim.Port
+	GMMUCacheTable *mem.MultiPageFinder
 }
 
 // Tick defines how the MMU update state each cycle
@@ -142,6 +148,8 @@ func (mmu *MMU) doPageWalkHit(
 	now sim.VTimeInSec,
 	walkingIndex int,
 ) bool {
+	madeProgress := false
+
 	if !mmu.topSender.CanSend(1) {
 		return false
 	}
@@ -158,14 +166,15 @@ func (mmu *MMU) doPageWalkHit(
 
 	mmu.topSender.Send(rsp)
 
-	// fmt.Printf("%0.9f,%s,SendRsp,%s\n",
-	// 	float64(now), mmu.topPort.Name(), rsp.TaskID)
+	vaddr := walking.req.VAddr
+	mmu.pageTable.UpdateAccessCounts(walking.req.PID, vaddr)
+	madeProgress = mmu.sendToGMMU(now, walking) || madeProgress
 
 	mmu.toRemoveFromPTW = append(mmu.toRemoveFromPTW, walkingIndex)
 
 	tracing.TraceReqComplete(walking.req, mmu)
-
-	return true
+	madeProgress = true
+	return madeProgress
 }
 
 func (mmu *MMU) sendMigrationToDriver(
@@ -258,7 +267,7 @@ func (mmu *MMU) sendTranlationRsp(
 	rsp := vm.TranslationRspBuilder{}.
 		WithSendTime(now).
 		WithSrc(mmu.topPort).
-		WithDst(req.Src).
+		WithDst(req.OriginPort).
 		WithRspTo(req.ID).
 		WithPage(page).
 		Build()
@@ -286,7 +295,7 @@ func (mmu *MMU) processMigrationReturn(now sim.VTimeInSec) bool {
 	rsp := vm.TranslationRspBuilder{}.
 		WithSendTime(now).
 		WithSrc(mmu.topPort).
-		WithDst(req.Src).
+		WithDst(req.OriginPort).
 		WithRspTo(req.ID).
 		WithPage(page).
 		Build()
@@ -361,4 +370,53 @@ func unique(intSlice []uint64) []uint64 {
 		}
 	}
 	return list
+}
+
+func (mmu *MMU) sendToGMMU(now sim.VTimeInSec, walking transaction) bool {
+	madeProgress := false
+	page, found := mmu.pageTable.Find(walking.req.PID, walking.req.VAddr)
+	if !found {
+		panic("page not found")
+	}
+
+	if page.AccessCounts > 1 {
+		gpuInnerLayerID := mmu.getNextLayerGPUID(walking.req.VAddr, 8)
+		gpuID := mmu.InnerLoop[gpuInnerLayerID]
+		taskID := sim.GetIDGenerator().Generate()
+		pageLoadMsg := vm.PageLoadMsgBuilder{}.
+			WithSendTime(now).
+			WithSrc(mmu.topPort).
+			WithDst(mmu.GMMUCacheTable.Find(gpuID)).
+			WithPage(page).
+			WithTaskID(taskID).
+			Build()
+		mmu.topSender.Send(pageLoadMsg)
+
+		madeProgress = true
+	}
+
+	if page.AccessCounts > 2 {
+		gpuInnerLayerID := mmu.getNextLayerGPUID(walking.req.VAddr, 16)
+		gpuID := mmu.MiddleLoop[gpuInnerLayerID]
+		taskID := sim.GetIDGenerator().Generate()
+		pageLoadMsg := vm.PageLoadMsgBuilder{}.
+			WithSendTime(now).
+			WithSrc(mmu.topPort).
+			WithDst(mmu.GMMUCacheTable.Find(gpuID)).
+			WithPage(page).
+			WithTaskID(taskID).
+			Build()
+		mmu.topSender.Send(pageLoadMsg)
+
+		madeProgress = true
+
+		page.AccessCounts = 0
+		mmu.pageTable.Update(page)
+	}
+
+	return madeProgress
+}
+
+func (mmu *MMU) getNextLayerGPUID(vaddr uint64, totalID uint64) uint64 {
+	return vaddr >> 12 % totalID
 }

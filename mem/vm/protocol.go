@@ -344,3 +344,74 @@ func (b RemoveMSHRReqBuilder) Build() *RemoveMSHRReq {
 	r.Translate = b.translate
 	return r
 }
+
+type PageLoadMsg struct {
+	sim.MsgMeta
+	Page       Page
+	OriginPort sim.Port
+	TaskID     string
+	LocalFlag  bool
+}
+
+func (r *PageLoadMsg) Meta() *sim.MsgMeta {
+	return &r.MsgMeta
+}
+
+type PageLoadMsgBuilder struct {
+	sendTime  sim.VTimeInSec
+	src, dst  sim.Port
+	page      Page
+	origPort  sim.Port
+	taskID    string
+	localFlag bool
+}
+
+func (b PageLoadMsgBuilder) WithLocalFlag(localFlag bool) PageLoadMsgBuilder {
+	b.localFlag = localFlag
+	return b
+}
+
+func (b PageLoadMsgBuilder) WithOriginPort(port sim.Port) PageLoadMsgBuilder {
+	b.origPort = port
+	return b
+}
+
+func (b PageLoadMsgBuilder) WithSendTime(
+	t sim.VTimeInSec,
+) PageLoadMsgBuilder {
+	b.sendTime = t
+	return b
+}
+
+func (b PageLoadMsgBuilder) WithSrc(src sim.Port) PageLoadMsgBuilder {
+	b.src = src
+	return b
+}
+
+func (b PageLoadMsgBuilder) WithDst(dst sim.Port) PageLoadMsgBuilder {
+	b.dst = dst
+	return b
+}
+
+func (b PageLoadMsgBuilder) WithPage(page Page) PageLoadMsgBuilder {
+	b.page = page
+	return b
+}
+
+func (b PageLoadMsgBuilder) WithTaskID(taskID string) PageLoadMsgBuilder {
+	b.taskID = taskID
+	return b
+}
+
+func (b PageLoadMsgBuilder) Build() *PageLoadMsg {
+	r := &PageLoadMsg{}
+	r.ID = sim.GetIDGenerator().Generate()
+	r.Src = b.src
+	r.Dst = b.dst
+	r.SendTime = b.sendTime
+	r.Page = b.page
+	r.OriginPort = b.origPort
+	r.TaskID = b.taskID
+	r.LocalFlag = b.localFlag
+	return r
+}

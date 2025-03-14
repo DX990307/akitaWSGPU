@@ -1,7 +1,9 @@
 package tlb_gmmu
 
 import (
+	"github.com/sarchlab/akita/v3/mem/mem"
 	"github.com/sarchlab/akita/v3/mem/vm"
+	"github.com/sarchlab/akita/v3/mem/vm/tlb_gmmu/internal"
 	"github.com/sarchlab/akita/v3/sim"
 )
 
@@ -19,6 +21,11 @@ type Builder struct {
 	deviceID       uint64
 	pageTable      vm.PageTable
 	ioMMUPort      sim.Port
+	// gmmuCacheTable map[uint64]sim.Port
+	gmmuCacheTable *mem.MultiPageFinder
+	InnerLayer     map[uint64]uint64
+	MiddleLayer    map[uint64]uint64
+	OuterLayer     map[uint64]uint64
 }
 
 // MakeBuilder returns a Builder
@@ -105,6 +112,26 @@ func (b Builder) WithIOMMUPort(ioMMUPort sim.Port) Builder {
 	return b
 }
 
+func (b Builder) WithGMMUCacheTable(gmmuCacheTable *mem.MultiPageFinder) Builder {
+	b.gmmuCacheTable = gmmuCacheTable
+	return b
+}
+
+func (b Builder) WithInnerLayer(innerLayer map[uint64]uint64) Builder {
+	b.InnerLayer = innerLayer
+	return b
+}
+
+func (b Builder) WithMiddleLayer(middleLayer map[uint64]uint64) Builder {
+	b.MiddleLayer = middleLayer
+	return b
+}
+
+func (b Builder) WithOuterLayer(outerLayer map[uint64]uint64) Builder {
+	b.OuterLayer = outerLayer
+	return b
+}
+
 // Build creates a new TLB
 func (b Builder) Build(name string) *GMMUTLB {
 	tlb := &GMMUTLB{}
@@ -120,6 +147,11 @@ func (b Builder) Build(name string) *GMMUTLB {
 	tlb.DeviceID = b.deviceID
 	tlb.pageTable = b.pageTable
 	tlb.IOMMUPort = b.ioMMUPort
+	tlb.cuckooFilter = *internal.NewCuckooFilter(256, tlb.Name())
+	tlb.gmmuCacheTable = b.gmmuCacheTable
+	tlb.InnerLayer = b.InnerLayer
+	tlb.MiddleLayer = b.MiddleLayer
+	tlb.OuterLayer = b.OuterLayer
 
 	b.createPorts(name, tlb)
 

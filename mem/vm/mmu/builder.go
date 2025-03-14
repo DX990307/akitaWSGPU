@@ -1,6 +1,7 @@
 package mmu
 
 import (
+	"github.com/sarchlab/akita/v3/mem/mem"
 	"github.com/sarchlab/akita/v3/mem/vm"
 	"github.com/sarchlab/akita/v3/sim"
 )
@@ -14,6 +15,10 @@ type Builder struct {
 	migrationServiceProvider sim.Port
 	maxNumReqInFlight        int
 	pageWalkingLatency       int
+	InnerLoop                map[uint64]uint64
+	MiddleLoop               map[uint64]uint64
+	// GMMUCacheTable           map[uint64]sim.Port
+	GMMUCacheTable *mem.MultiPageFinder
 }
 
 // MakeBuilder creates a new builder
@@ -23,6 +28,21 @@ func MakeBuilder() Builder {
 		log2PageSize:      12,
 		maxNumReqInFlight: 16,
 	}
+}
+
+func (b Builder) WithInnerLoop(innerLoop map[uint64]uint64) Builder {
+	b.InnerLoop = innerLoop
+	return b
+}
+
+func (b Builder) WithMiddleLoop(middleLoop map[uint64]uint64) Builder {
+	b.MiddleLoop = middleLoop
+	return b
+}
+
+func (b Builder) WithGMMUCacheTable(gmmuCacheTable *mem.MultiPageFinder) Builder {
+	b.GMMUCacheTable = gmmuCacheTable
+	return b
 }
 
 // WithEngine sets the engine to be used with the MMU
@@ -89,6 +109,9 @@ func (b Builder) configureInternalStates(mmu *MMU) {
 	mmu.maxRequestsInFlight = b.maxNumReqInFlight
 	mmu.latency = b.pageWalkingLatency
 	mmu.PageAccessedByDeviceID = make(map[uint64][]uint64)
+	mmu.InnerLoop = b.InnerLoop
+	mmu.MiddleLoop = b.MiddleLoop
+	mmu.GMMUCacheTable = b.GMMUCacheTable
 }
 
 func (b Builder) createPageTable(mmu *MMU) {

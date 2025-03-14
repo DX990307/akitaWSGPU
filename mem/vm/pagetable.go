@@ -11,15 +11,16 @@ type PID uint32
 // A Page is an entry in the page table, maintaining the information about how
 // to translate a virtual address to a physical address.
 type Page struct {
-	PID         PID
-	PAddr       uint64
-	VAddr       uint64
-	PageSize    uint64
-	Valid       bool
-	DeviceID    uint64
-	Unified     bool
-	IsMigrating bool
-	IsPinned    bool
+	PID          PID
+	AccessCounts uint64
+	PAddr        uint64
+	VAddr        uint64
+	PageSize     uint64
+	Valid        bool
+	DeviceID     uint64
+	Unified      bool
+	IsMigrating  bool
+	IsPinned     bool
 }
 
 // A PageTable holds the a list of pages.
@@ -28,6 +29,8 @@ type PageTable interface {
 	Remove(pid PID, vAddr uint64)
 	Find(pid PID, Addr uint64) (Page, bool)
 	Update(page Page)
+	UpdateAccessCounts(pid PID, vaddr uint64)
+	InitAccessCounts(pid PID, vaddr uint64)
 }
 
 // NewPageTable creates a new PageTable.
@@ -91,6 +94,24 @@ func (pt *pageTableImpl) Find(pid PID, vAddr uint64) (Page, bool) {
 func (pt *pageTableImpl) Update(page Page) {
 	table := pt.getTable(page.PID)
 	table.update(page)
+}
+
+func (pt *pageTableImpl) UpdateAccessCounts(pid PID, vaddr uint64) {
+	page, found := pt.Find(pid, vaddr)
+	if !found {
+		return
+	}
+	page.AccessCounts++
+	pt.Update(page)
+}
+
+func (pt *pageTableImpl) InitAccessCounts(pid PID, vaddr uint64) {
+	page, found := pt.Find(pid, vaddr)
+	if !found {
+		return
+	}
+	page.AccessCounts = 0
+	pt.Update(page)
 }
 
 type processTable struct {

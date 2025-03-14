@@ -268,6 +268,7 @@ func (ep *EndPoint) tryDeliver(now sim.VTimeInSec) bool {
 		// }
 
 		if err != nil {
+			fmt.Printf("Failure to deliver\n")
 			return madeProgress
 		}
 

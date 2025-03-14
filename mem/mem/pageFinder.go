@@ -11,7 +11,12 @@ type MultiPageFinder struct {
 }
 
 func (f *MultiPageFinder) Find(deviceID uint64) sim.Port {
-	return f.LowModules[deviceID]
+	port := f.LowModules[deviceID]
+	if port == nil {
+		panic("No port found for device")
+	}
+
+	return port
 }
 
 func NewMultiPageFinder() *MultiPageFinder {

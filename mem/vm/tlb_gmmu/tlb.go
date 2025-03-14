@@ -1,9 +1,7 @@
 package tlb_gmmu
 
 import (
-	"fmt"
 	"log"
-	"math"
 	"reflect"
 
 	"github.com/sarchlab/akita/v3/mem/mem"
@@ -37,10 +35,16 @@ type GMMUTLB struct {
 	mshr                mshr
 	respondingMSHREntry []*mshrEntry
 
-	isPaused  bool
-	DeviceID  uint64
-	pageTable vm.PageTable
-	PageFider mem.PageFinder
+	isPaused     bool
+	DeviceID     uint64
+	pageTable    vm.PageTable
+	PageFider    mem.PageFinder
+	cuckooFilter internal.CuckooFilter
+	// gmmuCacheTable map[uint64]sim.Port
+	gmmuCacheTable *mem.MultiPageFinder
+	InnerLayer     map[uint64]uint64
+	MiddleLayer    map[uint64]uint64
+	OuterLayer     map[uint64]uint64
 }
 
 // Reset sets all the entries int he TLB to be invalid
@@ -96,8 +100,12 @@ func (tlb *GMMUTLB) respondMSHREntry(now sim.VTimeInSec) bool {
 			WithOriginPort(req.Request.OriginPort).
 			Build()
 
-		// fmt.Printf("%0.9f,%s,RspToTop,%s,%d,%d,%d\n", float64(now), tlb.topPort.Name(), rspToTop.TaskID, page.VAddr, tlb.deviceID, page.DeviceID)
 		err := tlb.topPort.Send(rspToTop)
+
+		// if tlb.DeviceID == 35 {
+		// 	fmt.Printf("RspToTop: %0.9f,%s,RspToTop,%s,%d,%s\n", float64(now), tlb.topPort.Name(), page.VAddr, req.Request.Src.Name())
+		// }
+
 		if err != nil {
 			return false
 		}
@@ -107,19 +115,27 @@ func (tlb *GMMUTLB) respondMSHREntry(now sim.VTimeInSec) bool {
 		rspToOutside := vm.TranslationRspBuilder{}.
 			WithSendTime(now).
 			WithSrc(tlb.OutsidePort).
-			WithDst(req.Request.Src).
+			WithDst(req.Request.OriginPort).
 			WithRspTo(req.Request.ID).
 			WithPage(page).
 			WithTaskID(req.Request.TaskID).
 			WithOriginPort(req.Request.OriginPort).
 			Build()
 
-		// fmt.Printf("%0.9f,%s,RspToOutside,%s,%d,%d,%d\n", float64(now), tlb.OutsidePort.Name(), rspToOutside.TaskID, page.VAddr, tlb.deviceID, page.DeviceID)
 		err := tlb.OutsidePort.Send(rspToOutside)
+
+		// if tlb.DeviceID == 35 {
+		// 	fmt.Printf("%0.9f,%s,RspToOutside,%s,%d,%d,%d\n", float64(now), tlb.OutsidePort.Name(), page.VAddr, page.DeviceID)
+		// }
+
 		if err != nil {
 			return false
 		}
 	}
+
+	// if tlb.DeviceID == 35 {
+	// 	fmt.Printf("%0.9f,%s,RspToOutside,%s,%d,%d,%d\n", float64(now), tlb.OutsidePort.Name(), page.VAddr, page.DeviceID)
+	// }
 
 	mshrEntry.Requests = mshrEntry.Requests[1:]
 	if len(mshrEntry.Requests) == 0 {
@@ -141,7 +157,9 @@ func (tlb *GMMUTLB) lookupFromTopPort(now sim.VTimeInSec) bool {
 	}
 
 	req := msg.(*vm.TranslationReq)
-	// fmt.Printf("%0.9f,%s,FetchReqFromTop,%s,%d,%d\n", float64(now), tlb.topPort.Name(), req.TaskID, req.VAddr, tlb.deviceID)
+	// if tlb.DeviceID == 35 {
+	// 	fmt.Printf("lookupFromTopPort: %0.9f,%s,FetchReqFromTop,%s,%d\n", float64(now), tlb.topPort.Name(), req.TaskID, req.VAddr)
+	// }
 	return tlb.processTranslation(now, req, true, false)
 }
 
@@ -153,15 +171,28 @@ func (tlb *GMMUTLB) lookupFromOutsidePort(now sim.VTimeInSec) bool {
 
 	switch msg := msg.(type) {
 	case *vm.TranslationReq:
-		return tlb.processTranslation(now, msg, false, true)
+		if tlb.isInCuckooFilter(msg) {
+			return tlb.processTranslation(now, msg, false, true)
+		} else {
+			req, ok := tlb.sendToNextLayer(msg, now, false, true)
+			if !ok {
+				return false
+			}
+			tracing.TraceReqInitiate(req, tlb,
+				tracing.MsgIDAtReceiver(req, tlb))
+			return true
+		}
 	case *vm.TranslationRsp:
+		// if tlb.DeviceID == 35 {
+		// 	fmt.Printf("lookupFromOutsidePort: %0.9f,%s,RspFromOutside,%s,%d\n", float64(now), tlb.OutsidePort.Name(), msg.TaskID, msg.Page.VAddr)
+		// }
 		return tlb.processRsp(now, msg, false)
+	case *vm.PageLoadMsg:
+		return tlb.processPageLoadMsg(now, msg)
 	default:
 		panic("unexpected message type")
 	}
-
 	// fmt.Printf("%0.9f,%s,FetchReqFromOutside,%s, %d\n", float64(now), tlb.outsidePort.Name(), req.TaskID, req.VAddr)
-
 }
 
 func (tlb *GMMUTLB) handleTranslationHit(
@@ -170,6 +201,10 @@ func (tlb *GMMUTLB) handleTranslationHit(
 	setID, wayID int,
 	page vm.Page,
 ) bool {
+
+	// if tlb.DeviceID == 35 {
+	// 	fmt.Printf("handleTranslationHit: %0.9f,%s,RspToTop,%s,%d\n", float64(now), tlb.topPort.Name(), req.Request.TaskID, page.VAddr)
+	// }
 
 	if req.LocalFlag {
 		ok := tlb.sendRspToTop(now, req.Request, page)
@@ -212,11 +247,11 @@ func (tlb *GMMUTLB) handleTranslationMiss(
 
 	fetched := tlb.fetchBottom(now, mshrReq)
 	if fetched {
-		if mshrReq.LocalFlag {
-			tlb.topPort.Retrieve(now)
-		} else if mshrReq.RemoteFlag {
-			tlb.OutsidePort.Retrieve(now)
-		}
+		// if mshrReq.LocalFlag {
+		// 	tlb.topPort.Retrieve(now)
+		// } else if mshrReq.RemoteFlag {
+		// 	tlb.OutsidePort.Retrieve(now)
+		// }
 
 		tracing.TraceReqReceive(mshrReq.Request, tlb)
 		tracing.AddTaskStep(tracing.MsgIDAtReceiver(mshrReq.Request, tlb), tlb, "miss")
@@ -291,6 +326,10 @@ func (tlb *GMMUTLB) processTLBMSHRHit(
 ) bool {
 	mshrEntry.Requests = append(mshrEntry.Requests, mshrReq)
 
+	// if tlb.DeviceID == 35 {
+	// 	fmt.Printf("processTLBMSHRHit: %0.9f,%s,FetchReqFromTop,%s,%d\n", float64(now), tlb.topPort.Name(), mshrReq.Request.TaskID, mshrReq.Request.VAddr)
+	// }
+
 	if mshrReq.LocalFlag {
 		tlb.topPort.Retrieve(now)
 		// fmt.Printf("%0.9f,%s,FetchReqFromTop,%s\n", float64(now), tlb.topPort.Name(), mshrReq.Request.TaskID)
@@ -314,39 +353,27 @@ func (tlb *GMMUTLB) fetchBottom(now sim.VTimeInSec, mshrReq *MshrRequest /*req *
 		panic("page not found")
 	}
 
+	// if mshrReq.Request.VAddr == 28672 && tlb.DeviceID == 35 {
+	// 	fmt.Printf("sendToNextLayer: %0.9f,%s,FetchReqToOutside,%s,%d\n", float64(now), tlb.OutsidePort.Name(), mshrReq.Request.TaskID, mshrReq.Request.VAddr)
+	// }
+
 	if page.DeviceID != tlb.DeviceID {
-		dstPort := tlb.PageFider.Find(page.DeviceID)
-
-		toGMMUDistance := calculateDistance(int(tlb.DeviceID), int(page.DeviceID))
-		toIOMMUDistance := calculateDistance(int(tlb.DeviceID), 0)
-
-		if toGMMUDistance <= toIOMMUDistance {
-			dstPort = dstPort
-		} else {
-			dstPort = tlb.IOMMUPort
-		}
-
-		fetchOutside := vm.TranslationReqBuilder{}.
-			WithSendTime(now).
-			WithSrc(tlb.OutsidePort).
-			WithDst(dstPort).
-			WithPID(mshrReq.Request.PID).
-			WithVAddr(mshrReq.Request.VAddr).
-			WithDeviceID(mshrReq.Request.DeviceID).
-			WithTaskID(mshrReq.Request.TaskID).
-			WithOriginPort(tlb.OutsidePort).
-			Build()
-
-		err := tlb.OutsidePort.Send(fetchOutside)
-		if err != nil {
+		req, ok := tlb.sendToNextLayer(mshrReq.Request, now, mshrReq.LocalFlag, mshrReq.RemoteFlag)
+		if !ok {
 			return false
 		}
 
-		mshrEntry := tlb.mshr.Add(mshrReq.Request.PID, mshrReq.Request.VAddr)
-		mshrEntry.Requests = append(mshrEntry.Requests, mshrReq)
-		mshrEntry.reqToBottom = fetchOutside
+		if mshrReq.LocalFlag {
+			mshrEntry := tlb.mshr.Add(mshrReq.Request.PID, mshrReq.Request.VAddr)
+			mshrEntry.Requests = append(mshrEntry.Requests, mshrReq)
+			mshrEntry.reqToBottom = req
+		}
 
-		tracing.TraceReqInitiate(fetchOutside, tlb,
+		// if tlb.DeviceID == 35 {
+		// 	fmt.Printf("sendToNextLayer: %0.9f,%s,FetchReqToOutside,%s,%d\n", float64(now), tlb.OutsidePort.Name(), mshrReq.Request.TaskID, mshrReq.Request.VAddr)
+		// }
+
+		tracing.TraceReqInitiate(req, tlb,
 			tracing.MsgIDAtReceiver(mshrReq.Request, tlb))
 
 		return true
@@ -370,6 +397,16 @@ func (tlb *GMMUTLB) fetchBottom(now sim.VTimeInSec, mshrReq *MshrRequest /*req *
 	mshrEntry := tlb.mshr.Add(mshrReq.Request.PID, mshrReq.Request.VAddr)
 	mshrEntry.Requests = append(mshrEntry.Requests, mshrReq)
 	mshrEntry.reqToBottom = fetchBottom
+
+	if mshrReq.LocalFlag {
+		tlb.topPort.Retrieve(now)
+	} else if mshrReq.RemoteFlag {
+		tlb.OutsidePort.Retrieve(now)
+	}
+
+	// if tlb.DeviceID == 35 {
+	// 	fmt.Printf("sendToGMMU: %0.9f,%s,FetchReqToBottom,%s,%d\n", float64(now), tlb.bottomPort.Name(), mshrReq.Request.TaskID, mshrReq.Request.VAddr)
+	// }
 
 	tracing.TraceReqInitiate(fetchBottom, tlb,
 		tracing.MsgIDAtReceiver(mshrReq.Request, tlb))
@@ -490,6 +527,10 @@ func (tlb *GMMUTLB) processTranslation(now sim.VTimeInSec, req *vm.TranslationRe
 	}
 
 	mshrEntry := tlb.mshr.Query(req.PID, req.VAddr)
+	// if tlb.DeviceID == 35 {
+	// 	fmt.Printf("processTranslation: %0.9f,%s,FetchReqFromTop,%s,%d\n", float64(now), tlb.topPort.Name(), req.TaskID, req.VAddr)
+	// }
+
 	if mshrEntry != nil {
 		return tlb.processTLBMSHRHit(now, mshrEntry, mshrReq)
 	}
@@ -512,10 +553,10 @@ func (tlb *GMMUTLB) processRsp(now sim.VTimeInSec, rsp *vm.TranslationRsp, botto
 	if !mshrEntryPresent {
 		if bottom {
 			tlb.bottomPort.Retrieve(now)
-			// fmt.Printf("%0.9f,%s,RspFromBottom1,%s, %d, %d,%d\n", float64(now), tlb.bottomPort.Name(), rsp.TaskID, page.VAddr, tlb.deviceID, page.DeviceID)
+			// fmt.Printf("%0.9f,%s,RspFromBottom1,%s, %d, %d,%d\n", float64(now), tlb.bottomPort.Name(), rsp.TaskID, page.VAddr, tlb.DeviceID, page.DeviceID)
 		} else {
 			tlb.OutsidePort.Retrieve(now)
-			// fmt.Printf("%0.9f,%s,RspFromOutside1,%s, %d, %d,%d\n", float64(now), tlb.OutsidePort.Name(), rsp.TaskID, page.VAddr, tlb.deviceID, page.DeviceID)
+			// fmt.Printf("%0.9f,%s,RspFromOutside1,%s, %d, %d,%d\n", float64(now), tlb.OutsidePort.Name(), rsp.TaskID, page.VAddr, tlb.DeviceID, page.DeviceID)
 		}
 		return true
 	}
@@ -523,12 +564,13 @@ func (tlb *GMMUTLB) processRsp(now sim.VTimeInSec, rsp *vm.TranslationRsp, botto
 	setID := tlb.vAddrToSetID(page.VAddr)
 	set := tlb.Sets[setID]
 	wayID, ok, oldPage := tlb.Sets[setID].Evict()
-	if oldPage.VAddr != 0 {
-		fmt.Printf("GPU[%d],%d,%d\n", tlb.DeviceID, page.VAddr, oldPage.VAddr)
-	}
 
 	if !ok {
 		panic("failed to evict")
+	}
+
+	if !oldPage.Valid {
+		tlb.cuckooFilter.Delete(oldPage.VAddr)
 	}
 
 	// if oldPage.Valid {
@@ -551,37 +593,189 @@ func (tlb *GMMUTLB) processRsp(now sim.VTimeInSec, rsp *vm.TranslationRsp, botto
 	// tlb.respondingMSHREntry = mshrEntry
 	tlb.respondingMSHREntry = append(tlb.respondingMSHREntry, mshrEntry)
 	mshrEntry.page = page
+	tlb.cuckooFilter.Insert(page.VAddr)
 
 	tlb.mshr.Remove(rsp.Page.PID, rsp.Page.VAddr)
 	if bottom {
 		tlb.bottomPort.Retrieve(now)
-		// fmt.Printf("%0.9f,%s,RspFromBottom2,%s,%d, %d, %d\n", float64(now), tlb.bottomPort.Name(), rsp.TaskID, page.VAddr, tlb.deviceID, page.DeviceID)
+		// fmt.Printf("%0.9f,%s,RspFromBottom2,%s,%d, %d, %d\n", float64(now), tlb.bottomPort.Name(), rsp.TaskID, page.VAddr, tlb.DeviceID, page.DeviceID)
 	} else {
 		tlb.OutsidePort.Retrieve(now)
 		// if now == 0.000006025 {
 		// 	print("rspToTop: ")
 		// }
-		// fmt.Printf("%0.9f,%s,RspFromOutside2,%s,%d, %d, %d\n", float64(now), tlb.OutsidePort.Name(), rsp.TaskID, page.VAddr, tlb.deviceID, page.DeviceID)
+		// fmt.Printf("%0.9f,%s,RspFromOutside2,%s,%d, %d, %d\n", float64(now), tlb.OutsidePort.Name(), rsp.TaskID, page.VAddr, tlb.DeviceID, page.DeviceID)
 	}
 	tracing.TraceReqFinalize(mshrEntry.reqToBottom, tlb)
 	return true
 }
 
-func getCoordinates(id int) (int, int) {
-	if id == 0 {
-		return 3, 3 // 特殊处理 0 的坐标
-	}
-	row := (id - 1) / 7
-	col := (id - 1) % 7
-	return row, col
+func (tlb *GMMUTLB) isInCuckooFilter(req *vm.TranslationReq) bool {
+	return tlb.cuckooFilter.Lookup(req.VAddr)
 }
 
-func calculateDistance(id1, id2 int) float64 {
-	x1, y1 := getCoordinates(id1)
-	x2, y2 := getCoordinates(id2)
+func (tlb *GMMUTLB) sendToNextLayer(req *vm.TranslationReq, now sim.VTimeInSec, localFlag bool, remoteFlag bool) (*vm.TranslationReq, bool) {
+	_, ok := tlb.isGPUInOuterLayer(req)
+	srcPort := sim.Port(nil)
+	orgPort := sim.Port(nil)
 
-	// 计算曼哈顿距离
-	distance := math.Abs(float64(x1-x2)) + math.Abs(float64(y1-y2))
+	if remoteFlag {
+		srcPort = req.OriginPort
+		orgPort = req.OriginPort
+	} else {
+		srcPort = tlb.OutsidePort
+		orgPort = tlb.OutsidePort
+	}
 
-	return distance
+	if ok {
+		nextLayerGPUID := tlb.getNextLayerGPUID(req.VAddr, uint64(len(tlb.MiddleLayer)))
+		midLayerGPUID := tlb.MiddleLayer[nextLayerGPUID]
+		dstPort := tlb.gmmuCacheTable.Find(midLayerGPUID)
+		req := vm.TranslationReqBuilder{}.
+			WithSendTime(now).
+			WithSrc(srcPort).
+			WithDst(dstPort).
+			WithPID(req.PID).
+			WithVAddr(req.VAddr).
+			WithDeviceID(req.DeviceID).
+			WithTaskID(req.TaskID).
+			WithOriginPort(orgPort).
+			Build()
+		err := tlb.OutsidePort.Send(req)
+		if err != nil {
+			return nil, false
+		}
+
+		if remoteFlag {
+			tlb.OutsidePort.Retrieve(now)
+		} else {
+			tlb.topPort.Retrieve(now)
+		}
+
+		return req, true
+	}
+
+	_, ok = tlb.isGPUInMiddleLayer(req)
+	if ok {
+		nextLayerGPUID := tlb.getNextLayerGPUID(req.VAddr, uint64(len(tlb.InnerLayer)))
+		innerLayerGPUID := tlb.InnerLayer[nextLayerGPUID]
+		dstPort := tlb.gmmuCacheTable.Find(innerLayerGPUID)
+		// dstPort := tlb.gmmuCacheTable[innerLayerGPUID]
+		req := vm.TranslationReqBuilder{}.
+			WithSendTime(now).
+			WithSrc(srcPort).
+			WithDst(dstPort).
+			WithPID(req.PID).
+			WithVAddr(req.VAddr).
+			WithDeviceID(req.DeviceID).
+			WithTaskID(req.TaskID).
+			WithOriginPort(orgPort).
+			Build()
+		err := tlb.OutsidePort.Send(req)
+		if err != nil {
+			return nil, false
+		}
+
+		if remoteFlag {
+			tlb.OutsidePort.Retrieve(now)
+		} else {
+			tlb.topPort.Retrieve(now)
+		}
+
+		return req, true
+	}
+
+	_, ok = tlb.isGPUInInnerLayer(req)
+	if ok {
+		dstPort := tlb.IOMMUPort
+		req := vm.TranslationReqBuilder{}.
+			WithSendTime(now).
+			WithSrc(srcPort).
+			WithDst(dstPort).
+			WithPID(req.PID).
+			WithVAddr(req.VAddr).
+			WithDeviceID(req.DeviceID).
+			WithTaskID(req.TaskID).
+			WithOriginPort(orgPort).
+			Build()
+		err := tlb.OutsidePort.Send(req)
+		if err != nil {
+			return nil, false
+		}
+
+		if remoteFlag {
+			tlb.OutsidePort.Retrieve(now)
+		} else {
+			tlb.topPort.Retrieve(now)
+		}
+
+		return req, true
+	}
+	panic("device not found")
+}
+
+func (tlb *GMMUTLB) isGPUInInnerLayer(req *vm.TranslationReq) (uint64, bool) {
+	for layerID, globalID := range tlb.InnerLayer {
+		// if globalID == req.DeviceID {
+		if globalID == tlb.DeviceID {
+			return layerID, true
+		}
+	}
+	return 0, false
+}
+
+func (tlb *GMMUTLB) isGPUInMiddleLayer(req *vm.TranslationReq) (uint64, bool) {
+	for layerID, globalID := range tlb.MiddleLayer {
+		// if globalID == req.DeviceID {
+		if globalID == tlb.DeviceID {
+			return layerID, true
+		}
+	}
+	return 0, false
+}
+
+func (tlb *GMMUTLB) isGPUInOuterLayer(req *vm.TranslationReq) (uint64, bool) {
+	for layerID, globalID := range tlb.OuterLayer {
+		// if globalID == req.DeviceID {
+		if globalID == tlb.DeviceID {
+			return layerID, true
+		}
+	}
+	return 0, false
+}
+
+func (tlb *GMMUTLB) getNextLayerGPUID(vaddr uint64, totalID uint64) uint64 {
+	VPN := vaddr >> 12
+	GPUID := VPN % totalID
+	return GPUID
+}
+
+func (tlb *GMMUTLB) processPageLoadMsg(now sim.VTimeInSec, msg *vm.PageLoadMsg) bool {
+	page := msg.Page
+
+	setID := tlb.vAddrToSetID(page.VAddr)
+	set := tlb.Sets[setID]
+	wayID, ok, oldPage := tlb.Sets[setID].Evict()
+
+	if !ok {
+		panic("failed to evict")
+	}
+	if oldPage != nilPage {
+
+		tlb.cuckooFilter.Delete(oldPage.VAddr)
+		// if !ok {
+		// 	// if tlb.cuckooFilter.IsFull() {
+		// 	// 	fmt.Printf("cuckooFilter is full\n")
+		// 	// }
+		// 	// panic("failed to delete")
+		// }
+	}
+
+	set.Update(wayID, page)
+	set.Visit(wayID)
+
+	tlb.cuckooFilter.Insert(page.VAddr)
+
+	tlb.OutsidePort.Retrieve(now)
+	return true
 }
